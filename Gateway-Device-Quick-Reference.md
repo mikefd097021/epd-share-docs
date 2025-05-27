@@ -125,6 +125,7 @@ flowchart TD
   "deviceMac": "11:22:33:44:55:66",
   "imageData": "data:image/png;base64,iVBORw0KGgo...",
   "imageCode": "87654321",
+  "rawdata": [255, 255, 0, 128, 64, ...],  // EPD 原始數據陣列 (Uint8Array)
   "timestamp": "2021-12-31T16:00:00.000Z"
 }
 ```
