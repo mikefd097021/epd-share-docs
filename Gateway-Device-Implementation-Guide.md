@@ -285,6 +285,8 @@ ws://server-ip:port/ws?token=JWT_TOKEN
 {
   "type": "chunk_start_ack",
   "chunkId": "chunk_12345",
+  "status": "ready",
+  "error": null,
   "timestamp": 1640995200000
 }
 ```
@@ -292,18 +294,55 @@ ws://server-ip:port/ws?token=JWT_TOKEN
 **發送時機：** 收到 `image_chunk_start` 消息後立即發送
 **用途：** 確認已準備好接收分片數據
 
+**參數說明：**
+- `status`: 操作狀態
+  - `"ready"`: 已準備好接收分片數據
+  - `"error"`: 準備過程中發生錯誤
+- `error`: 錯誤信息（當 status 為 "error" 時提供具體錯誤描述，否則為 null）
+
 #### 1.5 chunk_ack 消息 (分片確認)
 ```json
 {
   "type": "chunk_ack",
   "chunkId": "chunk_12345",
   "chunkIndex": 5,
+  "status": "received",
+  "error": null,
   "timestamp": 1640995200000
 }
 ```
 
 **發送時機：** 收到每個分片數據後立即發送
 **用途：** 確認已成功接收該分片，Server 可以發送下一個分片
+
+**參數說明：**
+- `status`: 分片接收狀態
+  - `"received"`: 分片已成功接收並存儲
+  - `"duplicate"`: 檢測到重複分片（已接收過）
+  - `"error"`: 分片接收或處理過程中發生錯誤
+- `error`: 錯誤信息（當 status 為 "error" 時提供具體錯誤描述，否則為 null）
+
+#### 1.6 chunk_complete_ack 消息 (分片完成確認)
+```json
+{
+  "type": "chunk_complete_ack",
+  "chunkId": "chunk_12345",
+  "status": "success",
+  "receivedSize": 9484,
+  "error": null,
+  "timestamp": 1640995200000
+}
+```
+
+**發送時機：** 收到 `image_chunk_complete` 消息後立即發送
+**用途：** 確認所有分片已接收完成並成功重組
+
+**參數說明：**
+- `status`: 完成狀態
+  - `"success"`: 所有分片已成功接收並重組完成
+  - `"error"`: 分片重組過程中發生錯誤
+- `receivedSize`: 實際接收到的數據總大小（bytes）
+- `error`: 錯誤信息（當 status 為 "error" 時提供具體錯誤描述，否則為 null）
 
 ### 2. 接收消息格式 (Server → Gateway)
 
@@ -460,7 +499,29 @@ ws://server-ip:port/ws?token=JWT_TOKEN
 - 每個分片接收後必須立即發送 ACK
 - 超時未收到分片時，Server 會自動重傳
 
-#### 2.8 error 消息 (錯誤)
+#### 2.8 image_chunk_complete 消息 (分片傳輸完成)
+```json
+{
+  "type": "image_chunk_complete",
+  "chunkId": "chunk_12345",
+  "deviceMac": "11:22:33:44:55:66",
+  "imageCode": "87654321",
+  "totalChecksum": "a1b2",
+  "timestamp": "2021-12-31T16:00:00.000Z"
+}
+```
+
+**處理邏輯：**
+1. 驗證所有分片是否已正確接收
+2. 檢查數據完整性（可選：使用 totalChecksum）
+3. 完成圖像數據重組
+4. 更新本地 imageCode
+5. 發送 `chunk_complete_ack` 確認
+
+**字段說明：**
+- `totalChecksum`: 完整數據的校驗碼（可選，用於驗證數據完整性）
+
+#### 2.9 error 消息 (錯誤)
 ```json
 {
   "type": "error",
