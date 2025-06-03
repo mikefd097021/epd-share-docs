@@ -39,8 +39,9 @@ flowchart TD
 ```
 
 ### 2. 必要的消息類型
-- **發送**: `ping`, `gatewayInfo`, `deviceStatus`
-- **接收**: `welcome`, `pong`, `gatewayInfoAck`, `deviceStatusAck`, `update_preview`
+- **發送**: `ping`, `gatewayInfo`, `deviceStatus`, `chunk_start_ack`, `chunk_ack`
+- **接收**: `welcome`, `pong`, `gatewayInfoAck`, `deviceStatusAck`, `update_preview`, `image_chunk_start`
+- **二進制**: 分片數據（嵌入式 Index 模式）
 
 ## 📨 消息格式速查
 
@@ -64,11 +65,20 @@ flowchart TD
     "model": "Gateway Model 003",
     "wifiFirmwareVersion": "1.0.0",
     "btFirmwareVersion": "2.0.0",
-    "ipAddress": "192.168.1.100"
+    "ipAddress": "192.168.1.100",
+
+    // 新增：分片傳輸能力支援
+    "chunkingSupport": {
+      "enabled": true,                 // 是否支援分片傳輸
+      "maxChunkSize": 200,            // 每個分片的最大大小（4 bytes - 512KB）
+      "embeddedIndex": true,          // 是否支援嵌入式 Index 模式
+      "jsonHeader": true              // 是否支援 JSON Header 模式（向後兼容）
+    }
   }
 }
 ```
 **發送時機**: 收到 welcome 後立即發送，之後每 30 秒
+**重要**: `chunkingSupport` 決定 Server 是否對該 Gateway 啟用分片傳輸
 
 #### deviceStatus (設備狀態)
 ```json
@@ -91,6 +101,27 @@ flowchart TD
 ```
 **頻率**: 每 5 秒
 **注意**: 不包含 `dataId`，這是由前端或API控制的欄位
+
+#### chunk_start_ack (分片開始確認)
+```json
+{
+  "type": "chunk_start_ack",
+  "chunkId": "chunk_12345",
+  "timestamp": 1640995200000
+}
+```
+**發送時機**: 收到 `image_chunk_start` 後立即發送
+
+#### chunk_ack (分片確認)
+```json
+{
+  "type": "chunk_ack",
+  "chunkId": "chunk_12345",
+  "chunkIndex": 5,
+  "timestamp": 1640995200000
+}
+```
+**發送時機**: 收到每個分片數據後立即發送
 
 ### 接收消息 (Server → Gateway)
 
@@ -118,7 +149,7 @@ flowchart TD
 }
 ```
 
-#### update_preview (圖像更新)
+#### update_preview (圖像更新 - 直接傳輸)
 ```json
 {
   "type": "update_preview",
@@ -129,7 +160,30 @@ flowchart TD
   "timestamp": "2021-12-31T16:00:00.000Z"
 }
 ```
-**處理**: 更新本地 imageCode，下次 deviceStatus 時包含新值
+**處理**:
+- 更新本地 imageCode，下次 deviceStatus 時包含新值
+- `rawdata` 包含轉換後的 EPD 二進制數據，可直接發送到設備顯示
+
+#### image_chunk_start (分片傳輸開始)
+```json
+{
+  "type": "image_chunk_start",
+  "chunkId": "chunk_12345",
+  "deviceMac": "11:22:33:44:55:66",
+  "imageCode": "87654321",
+  "totalChunks": 48,
+  "totalSize": 9484,
+  "chunkSize": 200,
+  "indexSize": 4,
+  "dataType": "rawdata",
+  "mode": "embedded_index",
+  "timestamp": "2021-12-31T16:00:00.000Z"
+}
+```
+**處理**:
+1. 準備接收分片數據
+2. 發送 `chunk_start_ack` 確認
+3. 等待二進制分片數據
 
 ## ⚠️ 重要注意事項
 
@@ -137,7 +191,26 @@ flowchart TD
 - `gatewayInfo` 中的 `macAddress` 必須與 JWT Token 中的完全一致
 - 不匹配會導致連線被強制中斷並記錄安全事件
 
-### 3. 錯誤處理
+### 2. dataId 和 imageCode 處理
+- **imageCode**: 設備回報時不主動包含 `imageCode`
+- 只有在收到 Server 圖像更新後才在本地存儲 `imageCode`
+- 下次 `deviceStatus` 回報時包含更新後的 `imageCode`
+
+### 3. 分片傳輸機制
+- **自動判斷**: Server 根據 Gateway 上報的 `maxChunkSize` 自動判斷是否啟用分片
+- **嵌入式 Index**: 每個分片前 4 bytes 包含 chunkIndex (little-endian)
+- **ACK 機制**: 每個分片必須等待 Gateway 確認後才發送下一個
+- **性能警告**: 當分片數量 > 100 時，系統會發出性能警告
+- **硬體限制支援**: 支援 4 bytes - 512KB 的分片大小範圍
+
+### 4. 分片數據格式
+```
+[4 bytes: chunkIndex][N bytes: 實際數據]
+```
+- **chunkIndex**: 32位無符號整數，little-endian 格式
+- **實際數據**: EPD 原始數據的一部分
+
+### 5. 錯誤處理
 ```json
 {
   "type": "gatewayInfoAck",
@@ -176,6 +249,5 @@ flowchart TD
 ## 🔗 相關文檔
 
 - [完整實作指南](./Gateway-Device-Implementation-Guide.md)
----
 
-**版本**: 1.0.0
+**版本**: 2.0.0 - 新增分片傳輸支援
