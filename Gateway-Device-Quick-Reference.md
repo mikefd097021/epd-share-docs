@@ -39,8 +39,8 @@ flowchart TD
 ```
 
 ### 2. 必要的消息類型
-- **發送**: `ping`, `gatewayInfo`, `deviceStatus`, `chunk_start_ack`, `chunk_ack`
-- **接收**: `welcome`, `pong`, `gatewayInfoAck`, `deviceStatusAck`, `update_preview`, `image_chunk_start`
+- **發送**: `ping`, `gatewayInfo`, `deviceStatus`, `chunk_start_ack`, `chunk_ack`, `chunk_complete_ack`
+- **接收**: `welcome`, `pong`, `gatewayInfoAck`, `deviceStatusAck`, `update_preview`, `image_chunk_start`, `image_chunk_complete`
 - **二進制**: 分片數據（嵌入式 Index 模式）
 
 ## 📨 消息格式速查
@@ -107,10 +107,13 @@ flowchart TD
 {
   "type": "chunk_start_ack",
   "chunkId": "chunk_12345",
+  "status": "ready",
+  "error": null,
   "timestamp": 1640995200000
 }
 ```
 **發送時機**: 收到 `image_chunk_start` 後立即發送
+**status 值**: `"ready"` (準備就緒) | `"error"` (發生錯誤)
 
 #### chunk_ack (分片確認)
 ```json
@@ -118,10 +121,27 @@ flowchart TD
   "type": "chunk_ack",
   "chunkId": "chunk_12345",
   "chunkIndex": 5,
+  "status": "received",
+  "error": null,
   "timestamp": 1640995200000
 }
 ```
 **發送時機**: 收到每個分片數據後立即發送
+**status 值**: `"received"` (已接收) | `"duplicate"` (重複) | `"error"` (錯誤)
+
+#### chunk_complete_ack (分片完成確認)
+```json
+{
+  "type": "chunk_complete_ack",
+  "chunkId": "chunk_12345",
+  "status": "success",
+  "receivedSize": 9484,
+  "error": null,
+  "timestamp": 1640995200000
+}
+```
+**發送時機**: 收到 `image_chunk_complete` 後立即發送
+**status 值**: `"success"` (成功完成) | `"error"` (重組失敗)
 
 ### 接收消息 (Server → Gateway)
 
@@ -185,6 +205,23 @@ flowchart TD
 2. 發送 `chunk_start_ack` 確認
 3. 等待二進制分片數據
 
+#### image_chunk_complete (分片傳輸完成)
+```json
+{
+  "type": "image_chunk_complete",
+  "chunkId": "chunk_12345",
+  "deviceMac": "11:22:33:44:55:66",
+  "imageCode": "87654321",
+  "totalChecksum": "a1b2",
+  "timestamp": "2021-12-31T16:00:00.000Z"
+}
+```
+**處理**:
+1. 驗證所有分片已接收
+2. 重組完整數據
+3. 更新本地 imageCode
+4. 發送 `chunk_complete_ack` 確認
+
 ## ⚠️ 重要注意事項
 
 ### 1. MAC 地址安全
@@ -210,7 +247,22 @@ flowchart TD
 - **chunkIndex**: 32位無符號整數，little-endian 格式
 - **實際數據**: EPD 原始數據的一部分
 
-### 5. 錯誤處理
+### 5. status 和 error 參數說明
+
+**status 參數** - 表示操作的執行狀態：
+- **分片相關**:
+  - `"ready"`: 準備就緒（chunk_start_ack）
+  - `"received"`: 已成功接收（chunk_ack）
+  - `"duplicate"`: 重複分片（chunk_ack）
+  - `"success"`: 操作成功完成（chunk_complete_ack）
+  - `"error"`: 操作失敗
+
+**error 參數** - 提供具體錯誤信息：
+- 當 `status` 為 `"error"` 時，包含具體的錯誤描述
+- 當操作成功時，通常為 `null`
+- 幫助調試和錯誤追蹤
+
+### 6. 錯誤處理
 ```json
 {
   "type": "gatewayInfoAck",
@@ -250,4 +302,10 @@ flowchart TD
 
 - [完整實作指南](./Gateway-Device-Implementation-Guide.md)
 
+
 **版本**: 2.0.0 - 新增分片傳輸支援
+**新功能**:
+- 嵌入式 Index 分片傳輸
+- Gateway 能力上報機制
+- 硬體限制支援 (4 bytes - 512KB)
+- 性能警告系統
