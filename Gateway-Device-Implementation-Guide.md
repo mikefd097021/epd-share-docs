@@ -224,6 +224,7 @@ ws://server-ip:port/ws?token=JWT_TOKEN
     "chunkingSupport": {
       "enabled": true,                 // 是否支援分片傳輸
       "maxChunkSize": 200,            // 每個分片的最大大小（4 bytes - 512KB）
+      "maxSingleMessageSize": 10240,  // 單次發送訊息的最大數據量限制（bytes），超過則拒絕發送
       "embeddedIndex": true,          // 是否支援嵌入式 Index 模式
       "jsonHeader": true              // 是否支援 JSON Header 模式（向後兼容）
     }
