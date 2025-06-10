@@ -71,15 +71,21 @@ flowchart TD
     "chunkingSupport": {
       "enabled": true,                 // 是否支援分片傳輸
       "maxChunkSize": 200,            // 每個分片的最大大小（4 bytes - 512KB）
-      "maxSingleMessageSize": 10240,  // 單次發送訊息的最大數據量限制（bytes），超過則拒絕發送
+      "maxSingleMessageSize": 10240,  // 單次 JSON 訊息的最大大小限制（bytes）
       "embeddedIndex": true,          // 是否支援嵌入式 Index 模式
-      "jsonHeader": true              // 是否支援 JSON Header 模式（向後兼容）
+      "jsonHeader": true,             // 是否支援 JSON Header 模式（向後兼容）
+      "supportedFormat": "rawdata"    // 偏好的 rawdata 格式：rawdata, runlendata
     }
   }
 }
 ```
 **發送時機**: 收到 welcome 後立即發送，之後每 30 秒
 **重要**: `chunkingSupport` 決定 Server 是否對該 Gateway 啟用分片傳輸
+
+**分片決策邏輯**:
+1. 如果 `rawdata 大小 > maxChunkSize` → 使用分片傳輸
+2. 如果 `rawdata 大小 <= maxChunkSize` 但 `JSON 訊息大小 > maxSingleMessageSize` → 使用分片傳輸
+3. 否則 → 使用直接傳輸 (`update_preview`)
 
 #### deviceStatus (設備狀態)
 ```json
@@ -178,11 +184,13 @@ flowchart TD
   "imageData": "data:image/png;base64,iVBORw0KGgo...",
   "imageCode": "87654321",
   "rawdata": [255, 255, 0, 128, 64, ...],  // EPD 原始數據陣列 (Uint8Array)
+  "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
   "timestamp": "2021-12-31T16:00:00.000Z"
 }
 ```
 **處理**:
 - 更新本地 imageCode，下次 deviceStatus 時包含新值
+- 根據 `dataType` 處理 `rawdata` 中的數據
 - `rawdata` 包含轉換後的 EPD 二進制數據，可直接發送到設備顯示
 
 #### image_chunk_start (分片傳輸開始)
@@ -196,15 +204,16 @@ flowchart TD
   "totalSize": 9484,
   "chunkSize": 200,
   "indexSize": 4,
-  "dataType": "rawdata",
+  "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
   "mode": "embedded_index",
   "timestamp": "2021-12-31T16:00:00.000Z"
 }
 ```
 **處理**:
 1. 準備接收分片數據
-2. 發送 `chunk_start_ack` 確認
-3. 等待二進制分片數據
+2. 記錄 `dataType` 以便後續正確處理數據
+3. 發送 `chunk_start_ack` 確認
+4. 等待二進制分片數據
 
 #### image_chunk_complete (分片傳輸完成)
 ```json
@@ -223,6 +232,41 @@ flowchart TD
 3. 更新本地 imageCode
 4. 發送 `chunk_complete_ack` 確認
 
+## 📊 數據格式處理
+
+### dataType 格式說明
+- **`"rawdata"`**: 未壓縮的原始 EPD 數據，直接使用
+- **`"runlendata"`**: 使用 Run-Length Encoding 壓縮的數據，需要解壓縮
+
+### RLE 編碼格式
+1. **重複序列** (runLength >= 2):
+   - 格式: `[runLength, value]`
+   - runLength 範圍: 2-127 (0x02-0x7F)，bit7 = 0
+
+2. **非重複序列** (runLength = 1 或無重複):
+   - 格式: `[0x80|length, data...]`
+   - length 範圍: 1-127 (0x01-0x7F)，bit7 = 1
+
+**重要**:
+- bit7 是最高位元 (MSB)
+- 壓縮的只有 EPD 像素數據，不包含 ImageInfo 結構 (12 bytes) 頭部
+- 不包含 chunk 的 index 資訊
+
+### 數據處理流程
+```python
+def process_data(rawdata, data_type):
+    if data_type == "rawdata":
+        return rawdata  # 直接使用
+    elif data_type == "runlendata":
+        # 分離 ImageInfo (12 bytes) 和壓縮的像素數據
+        image_info = rawdata[:12]
+        compressed_pixels = rawdata[12:]
+        # 解壓縮像素數據
+        decompressed_pixels = decompress_rle(compressed_pixels)
+        # 重新組合
+        return image_info + decompressed_pixels
+```
+
 ## ⚠️ 重要注意事項
 
 ### 1. MAC 地址安全
@@ -235,7 +279,9 @@ flowchart TD
 - 下次 `deviceStatus` 回報時包含更新後的 `imageCode`
 
 ### 3. 分片傳輸機制
-- **自動判斷**: Server 根據 Gateway 上報的 `maxChunkSize` 自動判斷是否啟用分片
+- **兩階段決策**: Server 根據 `maxChunkSize` 和 `maxSingleMessageSize` 兩階段判斷是否啟用分片
+- **第一階段**: 檢查 rawdata 大小是否超過 `maxChunkSize`
+- **第二階段**: 檢查完整 JSON 訊息大小是否超過 `maxSingleMessageSize`
 - **嵌入式 Index**: 每個分片前 4 bytes 包含 chunkIndex (little-endian)
 - **ACK 機制**: 每個分片必須等待 Gateway 確認後才發送下一個
 - **性能警告**: 當分片數量 > 100 時，系統會發出性能警告
@@ -303,10 +349,15 @@ flowchart TD
 
 - [完整實作指南](./Gateway-Device-Implementation-Guide.md)
 
-
-**版本**: 2.0.0 - 新增分片傳輸支援
+**最後更新**: 2025年6月
+**版本**: 2.2.0 - 分片決策邏輯增強
 **新功能**:
 - 嵌入式 Index 分片傳輸
 - Gateway 能力上報機制
 - 硬體限制支援 (4 bytes - 512KB)
 - 性能警告系統
+- **dataType 欄位統一**: 使用 `dataType` 取代 `rawdataFormat`
+- **RLE 壓縮支援**: 完整的 Run-Length Encoding 實作指南
+- **數據處理流程**: 詳細的壓縮數據處理說明
+- **兩階段分片決策**: 新增 `maxSingleMessageSize` 參數，支援更智能的分片決策
+- **JSON 訊息大小檢查**: 當 rawdata 小但 JSON 訊息大時自動切換到分片傳輸

@@ -224,9 +224,10 @@ ws://server-ip:port/ws?token=JWT_TOKEN
     "chunkingSupport": {
       "enabled": true,                 // 是否支援分片傳輸
       "maxChunkSize": 200,            // 每個分片的最大大小（4 bytes - 512KB）
-      "maxSingleMessageSize": 10240,  // 單次發送訊息的最大數據量限制（bytes），超過則拒絕發送
+      "maxSingleMessageSize": 10240,  // 單次 JSON 訊息的最大大小限制（bytes）
       "embeddedIndex": true,          // 是否支援嵌入式 Index 模式
-      "jsonHeader": true              // 是否支援 JSON Header 模式（向後兼容）
+      "jsonHeader": true,             // 是否支援 JSON Header 模式（向後兼容）
+      "supportedFormat": "rawdata"    // 偏好的 rawdata 格式：rawdata, runlendata
     }
   }
 }
@@ -242,6 +243,26 @@ ws://server-ip:port/ws?token=JWT_TOKEN
 - 如果不匹配，Server 會強制中斷連線並記錄安全事件
 - `chunkingSupport` 決定 Server 是否對該 Gateway 啟用分片傳輸
 - `maxChunkSize` 應根據硬體記憶體限制設定，支援範圍 4 bytes - 512KB
+- `maxSingleMessageSize` 用於控制單次 JSON 訊息的大小限制，影響分片決策
+- `supportedFormat` 告知 Server 偏好的 rawdata 格式，Server 會優先使用此格式
+
+**分片傳輸決策邏輯：**
+Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
+
+1. **第一階段：rawdata 大小檢查**
+   - 如果 `rawdata 大小 > maxChunkSize` 且 `enabled: true` → 使用分片傳輸
+   - 如果 `rawdata 大小 > maxChunkSize` 但 `enabled: false` → 拋出錯誤
+   - 如果 `rawdata 大小 <= maxChunkSize` → 進入第二階段檢查
+
+2. **第二階段：JSON 訊息大小檢查**
+   - 構建完整的 `update_preview` JSON 訊息（包含 rawdata、imageData 等所有欄位）
+   - 如果 `JSON 訊息大小 > maxSingleMessageSize` 且 `enabled: true` → 使用分片傳輸
+   - 如果 `JSON 訊息大小 <= maxSingleMessageSize` → 使用直接傳輸
+
+**參數設定建議：**
+- `maxChunkSize`: 根據硬體記憶體限制設定（如 200-1024 bytes）
+- `maxSingleMessageSize`: 根據網路環境和處理能力設定（如 2048-10240 bytes）
+- 通常 `maxSingleMessageSize` 應大於 `maxChunkSize` 以避免過度分片
 
 #### 1.3 deviceStatus 消息 (設備狀態)
 ```json
@@ -433,6 +454,7 @@ ws://server-ip:port/ws?token=JWT_TOKEN
   "imageData": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
   "imageCode": "87654321",
   "rawdata": [255, 255, 0, 128, 64, ...],  // EPD 原始數據陣列 (Uint8Array)
+  "dataType": "rawdata",  // 數據格式類型：rawdata, runlendata 等
   "timestamp": "2021-12-31T16:00:00.000Z"
 }
 ```
@@ -440,14 +462,20 @@ ws://server-ip:port/ws?token=JWT_TOKEN
 **處理邏輯：**
 1. 接收圖像數據並保存到設備
 2. 更新本地存儲的 `imageCode`
-3. 使用 `rawdata` 中的 EPD 二進制數據直接發送到設備顯示
-4. 下次 `deviceStatus` 回報時包含新的 `imageCode`
+3. 根據 `dataType` 處理 `rawdata` 中的數據
+4. 使用處理後的 EPD 二進制數據直接發送到設備顯示
+5. 下次 `deviceStatus` 回報時包含新的 `imageCode`
 
 **rawdata 字段說明：**
 - 包含轉換後的 EPD 格式二進制數據
 - 數據格式根據設備的 colorType 而定 (BW/BWR/BWRY)
 - 包含 ImageInfo 結構 (12 bytes) + 像素數據
 - 可直接發送到 EPD 設備進行顯示，無需額外轉換
+
+**dataType 字段說明：**
+- `"rawdata"`: 未壓縮的原始 EPD 數據
+- `"runlendata"`: 使用 Run-Length Encoding 壓縮的數據
+- 其他格式可能在未來添加
 
 #### 2.6 image_chunk_start 消息 (分片傳輸開始)
 ```json
@@ -460,7 +488,7 @@ ws://server-ip:port/ws?token=JWT_TOKEN
   "totalSize": 9484,
   "chunkSize": 200,
   "indexSize": 4,
-  "dataType": "rawdata",
+  "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
   "mode": "embedded_index",
   "timestamp": "2021-12-31T16:00:00.000Z"
 }
@@ -469,8 +497,9 @@ ws://server-ip:port/ws?token=JWT_TOKEN
 **處理邏輯：**
 1. 準備接收分片數據，初始化接收緩衝區
 2. 記錄分片參數（總分片數、分片大小等）
-3. 立即發送 `chunk_start_ack` 確認
-4. 等待接收二進制分片數據
+3. 記錄 `dataType` 以便後續正確處理數據
+4. 立即發送 `chunk_start_ack` 確認
+5. 等待接收二進制分片數據
 
 **字段說明：**
 - `chunkId`: 唯一識別符，用於關聯所有分片
@@ -478,6 +507,7 @@ ws://server-ip:port/ws?token=JWT_TOKEN
 - `totalSize`: 原始數據總大小（不包含 index）
 - `chunkSize`: 每個分片的實際數據大小
 - `indexSize`: 每個分片前綴的 index 大小（固定 4 bytes）
+- `dataType`: 數據格式類型，決定如何處理接收到的數據
 - `mode`: "embedded_index" 表示使用嵌入式 Index 模式
 
 #### 2.7 二進制分片數據
@@ -530,6 +560,127 @@ ws://server-ip:port/ws?token=JWT_TOKEN
   "error": "具體錯誤信息",
   "timestamp": 1640995200000
 }
+```
+
+## 數據格式處理
+
+### 1. dataType 格式說明
+
+Server 會根據數據特性和 Gateway 能力選擇最適合的數據格式：
+
+#### 1.1 rawdata (原始格式)
+- **用途**: 未壓縮的原始 EPD 數據
+- **結構**: ImageInfo (12 bytes) + 像素數據
+- **處理**: 直接使用，無需額外處理
+
+#### 1.2 runlendata (RLE 壓縮格式)
+- **用途**: 使用 Run-Length Encoding 壓縮的數據
+- **結構**: ImageInfo (12 bytes) + 壓縮後的像素數據
+- **處理**: 需要解壓縮後才能使用
+
+### 2. RLE 編碼格式詳解
+
+#### 2.1 編碼規則
+Run-Length Encoding 使用以下格式：
+
+1. **重複序列** (runLength >= 2):
+   - 格式: `[runLength, value]`
+   - runLength 範圍: 2-127 (0x02-0x7F)
+   - bit7 = 0
+
+2. **非重複序列** (runLength = 1 或無重複):
+   - 格式: `[0x80|length, data...]`
+   - length 範圍: 1-127 (0x01-0x7F)
+   - bit7 = 1
+
+**重要說明**:
+- bit7 是最高位元 (MSB)
+- 壓縮的只有 EPD 像素數據，不包含 ImageInfo 結構 (12 bytes) 頭部
+- 不包含 chunk 的 index 資訊
+
+#### 2.2 解壓縮實現範例
+
+```python
+def decompress_rle_data(compressed_data):
+    """解壓縮 RLE 數據"""
+    decompressed = []
+    i = 0
+
+    while i < len(compressed_data):
+        header = compressed_data[i]
+        i += 1
+
+        if (header & 0x80) == 0:
+            # 重複序列：bit7 = 0
+            run_length = header
+            if i >= len(compressed_data):
+                raise Exception('Incomplete RLE data: missing value byte')
+            value = compressed_data[i]
+            i += 1
+
+            # 重複 run_length 次
+            for _ in range(run_length):
+                decompressed.append(value)
+        else:
+            # 非重複序列：bit7 = 1
+            length = header & 0x7F
+            if i + length > len(compressed_data):
+                raise Exception('Incomplete RLE data: insufficient data bytes')
+
+            # 複製 length 個字節
+            for j in range(length):
+                decompressed.append(compressed_data[i + j])
+            i += length
+
+    return bytes(decompressed)
+```
+
+#### 2.3 數據處理流程
+
+```python
+def process_received_data(rawdata, data_type):
+    """處理接收到的數據"""
+    if data_type == "rawdata":
+        # 原始數據，直接使用
+        return rawdata
+    elif data_type == "runlendata":
+        # RLE 壓縮數據，需要解壓縮
+        # 分離 ImageInfo 和壓縮的像素數據
+        image_info = rawdata[:12]  # 前 12 bytes 是 ImageInfo
+        compressed_pixels = rawdata[12:]  # 後續是壓縮的像素數據
+
+        # 解壓縮像素數據
+        decompressed_pixels = decompress_rle_data(compressed_pixels)
+
+        # 重新組合完整數據
+        complete_data = image_info + decompressed_pixels
+        return complete_data
+    else:
+        raise Exception(f"Unsupported data type: {data_type}")
+```
+
+### 3. 分片數據處理
+
+當使用分片傳輸時，需要特別注意：
+
+1. **分片重組**: 先按 chunkIndex 順序重組完整的 rawdata
+2. **格式處理**: 重組完成後，根據 `dataType` 處理數據
+3. **ImageInfo 保護**: 確保 ImageInfo 結構完整性
+4. **壓縮範圍**: RLE 壓縮只應用於像素數據部分
+
+```python
+def handle_complete_chunk_data(self, device_mac, image_code, complete_data, data_type):
+    """處理完整的分片數據"""
+    print(f"分片傳輸完成: 設備 {device_mac}, 數據大小 {len(complete_data)} bytes, 格式 {data_type}")
+
+    # 根據 dataType 處理數據
+    processed_data = process_received_data(complete_data, data_type)
+
+    # 更新本地 imageCode
+    self.image_codes[device_mac] = image_code
+
+    # 發送到設備
+    await self.send_epd_data_to_device(device_mac, processed_data)
 ```
 
 ## 失敗狀況與錯誤回應
@@ -1142,7 +1293,7 @@ class DeviceMonitor:
 
 實作人員可以基於此文檔開發符合系統要求的 Gateway 和 Device 程序。
 
-## 🆕 版本 2.0.0 新功能
+## 🆕 版本 2.1.0 新功能
 
 ### 分片傳輸支援
 - **嵌入式 Index 模式**：每個分片前 4 bytes 包含 chunkIndex
@@ -1151,6 +1302,13 @@ class DeviceMonitor:
 - **硬體限制支援**：支援 4 bytes - 512KB 的分片大小範圍
 - **性能警告系統**：當分片數量過多時發出警告
 - **可靠傳輸**：ACK 機制確保每個分片都被正確接收
+
+### 數據格式處理更新
+- **dataType 欄位統一**：使用 `dataType` 取代 `rawdataFormat` 欄位
+- **RLE 壓縮支援**：完整的 Run-Length Encoding 實作
+- **壓縮範圍明確**：只壓縮像素數據，不包含 ImageInfo 結構和 chunk index
+- **解壓縮實作**：提供完整的解壓縮算法和範例代碼
+- **錯誤處理增強**：針對數據格式處理的錯誤處理機制
 
 ## 附錄 A：完整消息流程時序圖
 
@@ -1586,3 +1744,14 @@ class HealthMonitor:
 7. **部署檢查清單**
 
 開發人員可以直接基於這些內容進行實際的 Gateway 和 Device 程序開發。
+
+---
+
+**最後更新**: 2025年6月
+**版本**: 2.2.0 - 分片決策邏輯增強
+**主要更新**:
+- **兩階段分片決策邏輯**: 新增詳細的分片決策流程說明
+- **maxSingleMessageSize 參數**: 新增 JSON 訊息大小限制參數
+- **智能分片切換**: 當 rawdata 小但 JSON 訊息大時自動切換到分片傳輸
+- **參數設定指南**: 提供 maxChunkSize 和 maxSingleMessageSize 的設定建議
+- **supportedFormat 參數**: 新增 rawdata 格式偏好設定
