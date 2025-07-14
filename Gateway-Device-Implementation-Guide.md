@@ -215,7 +215,8 @@ ws://server-ip:port/ws?token=JWT_TOKEN
   "type": "gatewayInfo",
   "info": {
     "macAddress": "AA:BB:CC:DD:EE:FF",
-    "model": "Gateway Model 003",
+    "model": "Gateway Module 003",
+    "hardwareVersion": "1.0.0.1",
     "wifiFirmwareVersion": "1.0.0",
     "btFirmwareVersion": "2.0.0",
     "ipAddress": "192.168.1.100",
@@ -237,6 +238,14 @@ ws://server-ip:port/ws?token=JWT_TOKEN
 - 收到 welcome 消息後立即發送
 - 每 30 秒定期更新
 - 網關信息變更時
+
+**網關信息字段說明：**
+- `macAddress`: 網關 MAC 地址 (必填，必須與 JWT Token 中的完全一致)
+- `model`: 網關模組 (如 "Gateway Module 003", "GW-Pro-001")
+- `hardwareVersion`: 硬體版本 (x.x.x.x格式，如 "1.0.0.1")
+- `wifiFirmwareVersion`: WiFi 固件版本 (如 "1.0.0", "2.1.3")
+- `btFirmwareVersion`: 藍牙固件版本 (如 "2.0.0", "1.5.2")
+- `ipAddress`: 當前 IP 地址 (如 "192.168.1.100")
 
 **重要注意事項：**
 - `macAddress` 必須與 JWT Token 中的 MAC 地址完全一致
@@ -271,6 +280,9 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
   "devices": [
     {
       "macAddress": "11:22:33:44:55:66",
+      "model": "EPD-2.9-BW",
+      "hardwareVersion": "1.0.0.1",
+      "firmwareVersion": "1.2.3",
       "status": "online",
       "data": {
         "size": "2.9\"",
@@ -287,6 +299,9 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
 **發送頻率：** 每 5 秒
 **設備狀態字段說明：**
 - `macAddress`: 設備 MAC 地址 (必填)
+- `model`: 設備模組 (如 "EPD-2.9-BW", "EPD-4.2-BWR")
+- `hardwareVersion`: 硬體版本 (x.x.x.x格式，如 "1.0.0.1")
+- `firmwareVersion`: 韌體版本 (如 "1.2.3", "2.0.1")
 - `status`: 設備狀態 ("online"/"offline")
 - `data.size`: 螢幕尺寸 (如 "2.9\"", "4.2\"")
 - `data.battery`: 電池電量 (0-100)
@@ -455,7 +470,7 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
   "imageCode": "87654321",
   "rawdata": [255, 255, 0, 128, 64, ...],  // EPD 原始數據陣列 (Uint8Array)
   "dataType": "rawdata",  // 數據格式類型：rawdata, runlendata 等
-  "timestamp": "2021-12-31T16:00:00.000Z"
+  "timestamp": 1640995200000  // 統一使用數字格式
 }
 ```
 
@@ -490,7 +505,7 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
   "indexSize": 4,
   "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
   "mode": "embedded_index",
-  "timestamp": "2021-12-31T16:00:00.000Z"
+  "timestamp": 1640995200000  // 統一使用數字格式
 }
 ```
 
@@ -538,7 +553,7 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
   "deviceMac": "11:22:33:44:55:66",
   "imageCode": "87654321",
   "totalChecksum": "a1b2",
-  "timestamp": "2021-12-31T16:00:00.000Z"
+  "timestamp": 1640995200000  // 統一使用數字格式
 }
 ```
 
@@ -561,6 +576,218 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
   "timestamp": 1640995200000
 }
 ```
+
+### 3. 韌體更新消息格式 (Server → Gateway)
+
+#### 3.1 firmware_chunk_start 消息 (韌體分片傳輸開始)
+```json
+{
+  "type": "firmware_chunk_start",
+  "chunkId": "firmware_chunk_12345",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "totalChunks": 128,
+  "totalSize": 524288,
+  "chunkSize": 4096,
+  "indexSize": 4,
+  "dataType": "firmware",
+  "mode": "embedded_index",
+  "firmwareInfo": {
+    "version": "2.1.0",
+    "deviceType": "gateway",
+    "model": "ESP32-S3",
+    "functionType": "wifi",
+    "checksum": "a1b2c3d4e5f6",
+    "minHwVersion": "1.0.0",
+    "maxHwVersion": "3.0.0"
+  },
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+
+**發送時機：** 開始韌體分片傳輸時
+**用途：** 通知 Gateway 準備接收韌體分片數據
+
+**參數說明：**
+- `chunkId`: 唯一的分片傳輸識別符
+- `deviceMac`: 目標設備的 MAC 地址（可能是 Gateway 自身或下游設備）
+- `firmwareId`: 韌體檔案的唯一識別符
+- `totalChunks`: 總分片數量
+- `totalSize`: 韌體檔案總大小（bytes）
+- `chunkSize`: 每個分片的實際韌體數據大小（不包含 index）
+- `indexSize`: 每個分片前綴的 index 大小（固定 4 bytes）
+- `dataType`: 數據類型，固定為 "firmware"
+- `mode`: 傳輸模式，固定為 "embedded_index"
+- `firmwareInfo`: 韌體詳細資訊
+  - `version`: 韌體版本
+  - `deviceType`: 設備類型（gateway/epd）
+  - `model`: 設備模組
+  - `functionType`: 功能類型（wifi/ble）
+  - `checksum`: 韌體校驗和
+  - `minHwVersion`: 最小硬體版本
+  - `maxHwVersion`: 最大硬體版本
+
+#### 3.2 firmware_update 消息 (韌體直接更新)
+```json
+{
+  "type": "firmware_update",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "firmwareData": [0x1F, 0x8B, 0x08, ...],
+  "dataType": "firmware",
+  "firmwareInfo": {
+    "version": "2.1.0",
+    "deviceType": "gateway",
+    "model": "ESP32-S3",
+    "functionType": "wifi",
+    "checksum": "a1b2c3d4e5f6"
+  },
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+
+**發送時機：** 韌體檔案較小時使用直接傳輸
+**用途：** 直接傳送完整韌體數據
+
+**參數說明：**
+- `firmwareData`: 韌體數據數組（完整的韌體檔案內容）
+- 其他參數與分片傳輸相同
+
+#### 3.3 firmware_chunk_complete 消息 (韌體分片傳輸完成)
+```json
+{
+  "type": "firmware_chunk_complete",
+  "chunkId": "firmware_chunk_12345",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "totalChecksum": "a1b2c3d4e5f6",
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+
+**發送時機：** 所有韌體分片傳輸完成後
+**用途：** 通知 Gateway 所有分片已傳輸完成，可以開始韌體更新
+
+**參數說明：**
+- `totalChecksum`: 完整韌體檔案的校驗和，用於驗證數據完整性
+
+### 4. 韌體更新回應消息格式 (Gateway → Server)
+
+#### 4.1 firmware_chunk_start_ack 消息 (韌體分片開始確認)
+```json
+{
+  "type": "firmware_chunk_start_ack",
+  "chunkId": "firmware_chunk_12345",
+  "status": "ready",
+  "message": null,
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+
+**發送時機：** 收到 `firmware_chunk_start` 消息後立即發送
+**用途：** 確認已準備好接收韌體分片數據
+
+#### 4.2 firmware_chunk_ack 消息 (韌體分片確認)
+```json
+{
+  "type": "firmware_chunk_ack",
+  "chunkId": "firmware_chunk_12345",
+  "chunkIndex": 42,
+  "status": "received",
+  "message": null,
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+
+**發送時機：** 每收到一個韌體分片後立即發送
+**用途：** 確認已成功接收該分片
+
+#### 4.3 firmware_chunk_complete_ack 消息 (韌體分片完成確認)
+```json
+{
+  "type": "firmware_chunk_complete_ack",
+  "chunkId": "firmware_chunk_12345",
+  "status": "success",
+  "message": null,
+  "finalChecksum": "a1b2c3d4e5f6",
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+
+**發送時機：** 收到 `firmware_chunk_complete` 消息並驗證完成後發送
+**用途：** 確認所有分片已接收完成並通過校驗
+
+#### 4.4 firmware_update_ack 消息 (韌體直接更新確認)
+```json
+{
+  "type": "firmware_update_ack",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "status": "success",
+  "message": null,
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+
+**發送時機：** 收到 `firmware_update` 消息並處理完成後發送
+**用途：** 確認韌體更新請求已接收並開始處理
+
+**注意：** Gateway 不需要發送 `firmware_update_progress` 和 `firmware_update_complete` 消息。這些消息是由 Server 發送給前端客戶端的，用於顯示更新進度和結果。Gateway 需要：
+1. 發送 `firmware_update_ack` 或 `firmware_chunk_complete_ack` 確認韌體接收完成
+2. 在韌體更新完成後，通過下次的 `gatewayInfo` 消息回報新的韌體版本
+3. 在韌體更新過程中發生錯誤時，發送 `firmware_update_error` 消息
+
+#### 4.5 firmware_update_error 消息 (韌體更新錯誤)
+```json
+{
+  "type": "firmware_update_error",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "errorCode": "CHECKSUM_MISMATCH",
+  "errorMessage": "韌體校驗失敗",
+  "stage": "installing",
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+
+**發送時機：** 韌體更新過程中發生錯誤時發送
+**用途：** 報告韌體更新錯誤給 Server，Server 會轉發給前端客戶端
+
+**參數說明：**
+- `deviceMac`: 目標設備的 MAC 地址
+- `firmwareId`: 韌體 ID
+- `errorCode`: 錯誤代碼（見下方錯誤代碼列表）
+- `errorMessage`: 詳細錯誤訊息
+- `stage`: 錯誤發生的階段
+  - `"downloading"`: 下載階段
+  - `"verifying"`: 驗證階段
+  - `"installing"`: 安裝階段
+  - `"rebooting"`: 重啟階段
+
+**常見錯誤代碼：**
+- `CHECKSUM_MISMATCH`: 校驗和不匹配
+- `INSUFFICIENT_MEMORY`: 記憶體不足
+- `INCOMPATIBLE_VERSION`: 版本不相容
+- `INVALID_FIRMWARE`: 無效的韌體檔案
+- `UPDATE_FAILED`: 安裝失敗
+- `TIMEOUT_ERROR`: 超時錯誤
+
+**韌體更新錯誤處理：**
+如果韌體更新過程中發生錯誤，Gateway 有兩種回報方式：
+
+**方式一：ACK 消息中的錯誤回報**
+1. 在相應的 ACK 消息中設置 `status: "error"` 和具體的 `error` 信息
+2. 適用於接收階段的錯誤（如格式錯誤、記憶體不足等）
+
+**方式二：專用錯誤消息回報**
+1. 發送 `firmware_update_error` 消息報告具體錯誤
+2. 適用於安裝階段的錯誤（如校驗失敗、安裝失敗等）
+3. 提供更詳細的錯誤信息和錯誤代碼
+
+**錯誤處理流程：**
+1. **接收階段錯誤**：在 ACK 中回報 → 繼續使用原韌體
+2. **安裝階段錯誤**：發送 `firmware_update_error` → 繼續使用原韌體
+3. **最終確認**：通過下次 `gatewayInfo` 中的韌體版本確認結果
 
 ## 數據格式處理
 
@@ -1173,8 +1400,13 @@ class EPDGateway:
         """處理來自 Server 的消息"""
         async for message in self.ws:
             try:
-                data = json.loads(message)
-                await self.process_message(data)
+                # 檢查是否為二進制數據（分片）
+                if isinstance(message, bytes):
+                    await self.handle_chunk_data(message)
+                else:
+                    # JSON 消息
+                    data = json.loads(message)
+                    await self.process_message(data)
             except Exception as e:
                 print(f"處理消息錯誤: {e}")
 
@@ -1191,6 +1423,9 @@ class EPDGateway:
 
         elif msg_type == "update_preview":
             await self.handle_image_update(data)
+
+        elif msg_type == "image_chunk_start":
+            await self.handle_chunk_start(data)
 
         elif msg_type == "gatewayInfoAck":
             if not data.get("success") and data.get("fatal"):
@@ -1226,18 +1461,176 @@ class EPDGateway:
             await asyncio.sleep(5)
 
     async def handle_image_update(self, data):
-        """處理圖像更新"""
+        """處理圖像更新（直接傳輸）"""
         device_mac = data.get("deviceMac")
         image_code = data.get("imageCode")
         image_data = data.get("imageData")
+        rawdata = data.get("rawdata")  # EPD 原始數據
+        data_type = data.get("dataType", "rawdata")  # 獲取數據格式類型
 
         if device_mac and image_code:
             # 更新本地 imageCode
             self.image_codes[device_mac] = image_code
-            print(f"已更新設備 {device_mac} 的 imageCode: {image_code}")
+            print(f"已更新設備 {device_mac} 的 imageCode: {image_code}, 格式: {data_type}")
 
-            # 發送圖像到設備 (實際實作中需要通過藍牙等方式)
-            await self.send_image_to_device(device_mac, image_data)
+            # 優先使用 rawdata 發送到設備
+            if rawdata:
+                print(f"使用 EPD 原始數據發送到設備 {device_mac}")
+                # 根據 dataType 處理數據
+                processed_data = self.process_received_data(rawdata, data_type)
+                await self.send_epd_data_to_device(device_mac, processed_data)
+            else:
+                print(f"使用圖像數據發送到設備 {device_mac}")
+                await self.send_image_to_device(device_mac, image_data)
+
+    async def handle_chunk_start(self, data):
+        """處理分片傳輸開始"""
+        chunk_id = data.get("chunkId")
+        device_mac = data.get("deviceMac")
+        image_code = data.get("imageCode")
+        total_chunks = data.get("totalChunks")
+        total_size = data.get("totalSize")
+        chunk_size = data.get("chunkSize")
+        data_type = data.get("dataType", "rawdata")  # 獲取數據格式類型
+
+        print(f"開始接收分片: {chunk_id}, 設備: {device_mac}, 總分片: {total_chunks}, 格式: {data_type}")
+
+        # 初始化分片接收器
+        self.chunk_receiver = ChunkReceiver(
+            chunk_id=chunk_id,
+            device_mac=device_mac,
+            image_code=image_code,
+            total_chunks=total_chunks,
+            total_size=total_size,
+            chunk_size=chunk_size,
+            data_type=data_type  # 傳遞數據格式類型
+        )
+
+        # 發送開始確認
+        ack_message = {
+            "type": "chunk_start_ack",
+            "chunkId": chunk_id,
+            "timestamp": int(time.time() * 1000)
+        }
+        await self.ws.send(json.dumps(ack_message))
+
+    async def handle_chunk_data(self, binary_data):
+        """處理分片數據"""
+        if not self.chunk_receiver:
+            print("收到分片數據但沒有活躍的接收器")
+            return
+
+        # 解析嵌入式 Index
+        if len(binary_data) < 4:
+            print("分片數據太短，無法解析 index")
+            return
+
+        # 提取 chunkIndex (little-endian)
+        chunk_index = int.from_bytes(binary_data[:4], byteorder='little')
+        actual_data = binary_data[4:]
+
+        print(f"收到分片 {chunk_index}: {len(actual_data)} bytes")
+
+        # 存儲分片數據
+        success = self.chunk_receiver.add_chunk(chunk_index, actual_data)
+
+        if success:
+            # 發送分片確認
+            ack_message = {
+                "type": "chunk_ack",
+                "chunkId": self.chunk_receiver.chunk_id,
+                "chunkIndex": chunk_index,
+                "timestamp": int(time.time() * 1000)
+            }
+            await self.ws.send(json.dumps(ack_message))
+
+            # 檢查是否完成
+            if self.chunk_receiver.is_complete():
+                complete_data = self.chunk_receiver.get_complete_data()
+                await self.handle_complete_chunk_data(
+                    self.chunk_receiver.device_mac,
+                    self.chunk_receiver.image_code,
+                    complete_data,
+                    self.chunk_receiver.data_type  # 傳遞數據格式類型
+                )
+                self.chunk_receiver = None
+
+    async def handle_complete_chunk_data(self, device_mac, image_code, complete_data, data_type):
+        """處理完整的分片數據"""
+        print(f"分片傳輸完成: 設備 {device_mac}, 數據大小 {len(complete_data)} bytes, 格式: {data_type}")
+
+        # 根據 dataType 處理數據
+        processed_data = self.process_received_data(complete_data, data_type)
+
+        # 更新本地 imageCode
+        self.image_codes[device_mac] = image_code
+
+        # 發送到設備
+        await self.send_epd_data_to_device(device_mac, processed_data)
+
+    def process_received_data(self, rawdata, data_type):
+        """處理接收到的數據"""
+        if data_type == "rawdata":
+            # 原始數據，直接使用
+            return rawdata
+        elif data_type == "runlendata":
+            # RLE 壓縮數據，需要解壓縮
+            rawdata_bytes = bytes(rawdata) if isinstance(rawdata, list) else rawdata
+
+            # 分離 ImageInfo 和壓縮的像素數據
+            image_info = rawdata_bytes[:12]  # 前 12 bytes 是 ImageInfo
+            compressed_pixels = rawdata_bytes[12:]  # 後續是壓縮的像素數據
+
+            # 解壓縮像素數據
+            decompressed_pixels = self.decompress_rle_data(compressed_pixels)
+
+            # 重新組合完整數據
+            complete_data = image_info + decompressed_pixels
+            return complete_data
+        else:
+            raise Exception(f"Unsupported data type: {data_type}")
+
+    def decompress_rle_data(self, compressed_data):
+        """解壓縮 RLE 數據"""
+        decompressed = []
+        i = 0
+
+        while i < len(compressed_data):
+            header = compressed_data[i]
+            i += 1
+
+            if (header & 0x80) == 0:
+                # 重複序列：bit7 = 0
+                run_length = header
+                if i >= len(compressed_data):
+                    raise Exception('Incomplete RLE data: missing value byte')
+                value = compressed_data[i]
+                i += 1
+
+                # 重複 run_length 次
+                for _ in range(run_length):
+                    decompressed.append(value)
+            else:
+                # 非重複序列：bit7 = 1
+                length = header & 0x7F
+                if i + length > len(compressed_data):
+                    raise Exception('Incomplete RLE data: insufficient data bytes')
+
+                # 複製 length 個字節
+                for j in range(length):
+                    decompressed.append(compressed_data[i + j])
+                i += length
+
+        return bytes(decompressed)
+
+    async def send_epd_data_to_device(self, device_mac, rawdata):
+        """發送 EPD 原始數據到設備"""
+        # 將 rawdata 陣列轉換為 bytes
+        epd_bytes = bytes(rawdata) if isinstance(rawdata, list) else rawdata
+
+        # 實際實作中需要通過藍牙等方式發送到 EPD 設備
+        print(f"發送 {len(epd_bytes)} bytes EPD 數據到設備 {device_mac}")
+        # await self.bluetooth_manager.send_to_device(device_mac, epd_bytes)
 
 # 使用範例
 async def main():
@@ -1247,6 +1640,60 @@ async def main():
         mac_address="AA:BB:CC:DD:EE:FF"
     )
     await gateway.start()
+
+class ChunkReceiver:
+    """分片接收器"""
+    def __init__(self, chunk_id, device_mac, image_code, total_chunks, total_size, chunk_size, data_type="rawdata"):
+        self.chunk_id = chunk_id
+        self.device_mac = device_mac
+        self.image_code = image_code
+        self.total_chunks = total_chunks
+        self.total_size = total_size
+        self.chunk_size = chunk_size
+        self.data_type = data_type  # 數據格式類型
+        self.received_chunks = {}  # chunkIndex -> data
+        self.received_count = 0
+
+    def add_chunk(self, chunk_index, data):
+        """添加分片數據"""
+        if chunk_index in self.received_chunks:
+            print(f"重複的分片 {chunk_index}，忽略")
+            return False
+
+        if chunk_index >= self.total_chunks:
+            print(f"無效的分片索引 {chunk_index}，總分片數 {self.total_chunks}")
+            return False
+
+        self.received_chunks[chunk_index] = data
+        self.received_count += 1
+        print(f"已接收分片 {chunk_index}/{self.total_chunks} ({self.received_count}/{self.total_chunks})")
+        return True
+
+    def is_complete(self):
+        """檢查是否已接收所有分片"""
+        return self.received_count == self.total_chunks
+
+    def get_complete_data(self):
+        """重組完整數據"""
+        if not self.is_complete():
+            raise Exception("分片接收未完成")
+
+        # 按順序重組數據
+        complete_data = bytearray()
+        for i in range(self.total_chunks):
+            if i not in self.received_chunks:
+                raise Exception(f"缺少分片 {i}")
+            complete_data.extend(self.received_chunks[i])
+
+        return bytes(complete_data)
+
+    def get_progress(self):
+        """獲取接收進度"""
+        return {
+            "received": self.received_count,
+            "total": self.total_chunks,
+            "percentage": (self.received_count / self.total_chunks) * 100
+        }
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -1293,7 +1740,7 @@ class DeviceMonitor:
 
 實作人員可以基於此文檔開發符合系統要求的 Gateway 和 Device 程序。
 
-## 🆕 版本 2.1.0 新功能
+## 🆕 版本 2.2.0 新功能
 
 ### 分片傳輸支援
 - **嵌入式 Index 模式**：每個分片前 4 bytes 包含 chunkIndex
@@ -1309,6 +1756,20 @@ class DeviceMonitor:
 - **壓縮範圍明確**：只壓縮像素數據，不包含 ImageInfo 結構和 chunk index
 - **解壓縮實作**：提供完整的解壓縮算法和範例代碼
 - **錯誤處理增強**：針對數據格式處理的錯誤處理機制
+
+### 韌體傳輸支援
+- **韌體分片傳輸**：支援大型韌體檔案的分片傳輸
+- **韌體直接傳輸**：小型韌體檔案的直接傳輸
+- **智能傳輸判斷**：根據韌體大小和Gateway能力自動選擇傳輸方式
+- **韌體相容性驗證**：自動驗證韌體版本和硬體相容性
+- **進度追蹤**：實時韌體更新進度報告
+- **錯誤處理**：完整的韌體更新錯誤處理機制
+
+### 時序圖文檔增強
+- **📊 詳細時序圖**：新增圖片傳輸和韌體傳輸的完整時序圖
+- **🖼️ 圖片傳輸流程**：直接傳輸和分片傳輸的詳細時序圖
+- **🔧 韌體傳輸流程**：直接傳輸和分片傳輸的詳細時序圖
+- **📋 實作指導**：為裝置人員提供清晰的開發指導
 
 ## 附錄 A：完整消息流程時序圖
 
@@ -1399,7 +1860,260 @@ sequenceDiagram
     end
 ```
 
-## 附錄 B：錯誤處理流程圖
+## 附錄 B：圖片傳輸詳細時序圖
+
+### B.1 直接圖片傳輸時序圖
+
+```mermaid
+sequenceDiagram
+    participant U as 用戶
+    participant S as Server
+    participant G as Gateway
+    participant D as EPD設備
+
+    Note over U,D: 直接圖片傳輸流程 (小圖片或Gateway不支援分片)
+
+    U->>S: 觸發圖片更新請求
+    S->>S: 生成 EPD rawdata 和 imageCode
+    S->>S: 檢查 Gateway 分片能力
+    S->>S: 判斷: rawdata 大小 <= maxChunkSize
+    S->>S: 判斷: JSON 訊息大小 <= maxSingleMessageSize
+
+    Note over S: 決定使用直接傳輸
+
+    S->>G: update_preview 消息
+    Note right of S: 包含: deviceMac, imageCode,<br/>rawdata, dataType, imageData
+
+    G->>G: 接收並解析 update_preview
+    G->>G: 根據 dataType 處理 rawdata
+    alt dataType == "runlendata"
+        G->>G: 分離 ImageInfo (12 bytes)
+        G->>G: 解壓縮像素數據 (RLE)
+        G->>G: 重組完整 EPD 數據
+    else dataType == "rawdata"
+        G->>G: 直接使用 rawdata
+    end
+
+    G->>G: 更新本地 imageCode
+    G->>D: 透過藍牙發送 EPD 數據
+    D->>D: 更新顯示內容
+    D->>G: 更新完成確認
+
+    Note over G: 下次 deviceStatus 將包含新 imageCode
+
+    G->>S: deviceStatus (包含新 imageCode)
+    S->>S: 更新設備狀態
+```
+
+### B.2 分片圖片傳輸時序圖
+
+```mermaid
+sequenceDiagram
+    participant U as 用戶
+    participant S as Server
+    participant G as Gateway
+    participant D as EPD設備
+
+    Note over U,D: 分片圖片傳輸流程 (大圖片且Gateway支援分片)
+
+    U->>S: 觸發圖片更新請求
+    S->>S: 生成 EPD rawdata 和 imageCode
+    S->>S: 檢查 Gateway 分片能力
+    alt rawdata 大小 > maxChunkSize
+        Note over S: 第一階段: rawdata 超過分片大小限制
+        S->>S: 決定使用分片傳輸
+    else JSON 訊息大小 > maxSingleMessageSize
+        Note over S: 第二階段: JSON 訊息過大
+        S->>S: 決定使用分片傳輸
+    end
+
+    S->>S: 根據 dataType 處理 rawdata
+    S->>S: 計算分片參數 (totalChunks, chunkSize)
+    S->>S: 生成唯一 chunkId
+
+    S->>G: image_chunk_start 消息
+    Note right of S: 包含: chunkId, deviceMac, imageCode,<br/>totalChunks, totalSize, chunkSize,<br/>dataType, mode: "embedded_index"
+
+    G->>G: 初始化 ChunkReceiver
+    G->>G: 準備接收分片數據
+    G->>S: chunk_start_ack (status: "ready")
+
+    loop 每個分片 (i = 0 to totalChunks-1)
+        S->>S: 準備分片 i 數據
+        S->>S: 創建嵌入式 Index: [4 bytes: chunkIndex][N bytes: 數據]
+        S->>G: 二進制分片數據
+
+        G->>G: 解析前 4 bytes 獲取 chunkIndex
+        G->>G: 提取實際數據並存儲
+        G->>G: 檢查重複分片
+        G->>S: chunk_ack (chunkIndex, status: "received")
+
+        Note over S: 等待 ACK 後發送下一個分片
+    end
+
+    S->>G: image_chunk_complete 消息
+    Note right of S: 包含: chunkId, deviceMac,<br/>imageCode, totalChecksum
+
+    G->>G: 驗證所有分片已接收
+    G->>G: 按順序重組完整數據
+    G->>G: 驗證數據完整性 (可選)
+    G->>G: 根據 dataType 處理重組數據
+    alt dataType == "runlendata"
+        G->>G: 分離 ImageInfo (12 bytes)
+        G->>G: 解壓縮像素數據 (RLE)
+        G->>G: 重組完整 EPD 數據
+    else dataType == "rawdata"
+        G->>G: 直接使用重組數據
+    end
+
+    G->>G: 更新本地 imageCode
+    G->>S: chunk_complete_ack (status: "success", receivedSize)
+
+    G->>D: 透過藍牙發送完整 EPD 數據
+    D->>D: 更新顯示內容
+    D->>G: 更新完成確認
+
+    Note over G: 下次 deviceStatus 將包含新 imageCode
+
+    G->>S: deviceStatus (包含新 imageCode)
+    S->>S: 更新設備狀態
+```
+
+## 附錄 C：韌體傳輸詳細時序圖
+
+### C.1 直接韌體傳輸時序圖
+
+```mermaid
+sequenceDiagram
+    participant U as 用戶
+    participant S as Server
+    participant G as Gateway
+    participant T as 目標設備
+
+    Note over U,T: 直接韌體傳輸流程 (小韌體檔案)
+
+    U->>S: 觸發韌體更新請求
+    S->>S: 讀取韌體檔案數據
+    S->>S: 驗證韌體相容性
+    S->>S: 檢查 Gateway 分片能力
+    S->>S: 判斷: 韌體大小 <= maxChunkSize
+    S->>S: 判斷: JSON 訊息大小 <= maxSingleMessageSize
+
+    Note over S: 決定使用直接傳輸
+
+    S->>G: firmware_update 消息
+    Note right of S: 包含: deviceMac, firmwareId,<br/>firmwareData, dataType: "firmware",<br/>firmwareInfo (version, model, checksum)
+
+    G->>G: 接收並解析 firmware_update
+    G->>G: 驗證韌體相容性
+    G->>G: 檢查硬體版本匹配
+    G->>G: 驗證校驗和
+    G->>S: firmware_update_ack (status: "success")
+
+    G->>G: 開始韌體更新流程
+
+    alt 目標是 Gateway 自身
+        G->>G: 安裝 WiFi/藍牙韌體
+        G->>G: 重啟並應用新韌體
+    else 目標是下游設備
+        G->>T: 透過藍牙發送韌體數據
+        T->>T: 安裝韌體
+        T->>G: 安裝完成確認
+    end
+
+    alt 韌體更新成功
+        Note over G: 韌體更新結果通過下次 gatewayInfo 回報
+        G->>S: gatewayInfo (新韌體版本)
+        S->>S: 檢查韌體版本變化確認更新成功
+    else 韌體更新失敗
+        G->>S: firmware_update_error (錯誤代碼和訊息)
+        S->>S: 轉發錯誤給前端客戶端
+        G->>S: gatewayInfo (原韌體版本)
+        S->>S: 確認韌體版本未變化，更新失敗
+    end
+```
+
+### C.2 分片韌體傳輸時序圖
+
+```mermaid
+sequenceDiagram
+    participant U as 用戶
+    participant S as Server
+    participant G as Gateway
+    participant T as 目標設備
+
+    Note over U,T: 分片韌體傳輸流程 (大韌體檔案)
+
+    U->>S: 觸發韌體更新請求
+    S->>S: 讀取韌體檔案數據
+    S->>S: 驗證韌體相容性
+    S->>S: 檢查 Gateway 分片能力
+    alt 韌體大小 > maxChunkSize
+        Note over S: 第一階段: 韌體超過分片大小限制
+        S->>S: 決定使用分片傳輸
+    else JSON 訊息大小 > maxSingleMessageSize
+        Note over S: 第二階段: JSON 訊息過大
+        S->>S: 決定使用分片傳輸
+    end
+
+    S->>S: 計算分片參數 (totalChunks, chunkSize)
+    S->>S: 生成唯一 chunkId
+
+    S->>G: firmware_chunk_start 消息
+    Note right of S: 包含: chunkId, deviceMac, firmwareId,<br/>totalChunks, totalSize, chunkSize,<br/>dataType: "firmware", mode: "embedded_index",<br/>firmwareInfo (version, model, checksum)
+
+    G->>G: 初始化韌體 ChunkReceiver
+    G->>G: 驗證韌體相容性
+    G->>G: 準備接收韌體分片數據
+    G->>S: firmware_chunk_start_ack (status: "ready")
+
+    loop 每個分片 (i = 0 to totalChunks-1)
+        S->>S: 準備韌體分片 i 數據
+        S->>S: 創建嵌入式 Index: [4 bytes: chunkIndex][N bytes: 韌體數據]
+        S->>G: 二進制韌體分片數據
+        S->>S: 廣播下載進度
+
+        G->>G: 解析前 4 bytes 獲取 chunkIndex
+        G->>G: 提取實際韌體數據並存儲
+        G->>G: 檢查重複分片
+        G->>S: firmware_chunk_ack (chunkIndex, status: "received")
+
+        Note over S: 等待 ACK 後發送下一個分片
+    end
+
+    S->>G: firmware_chunk_complete 消息
+    Note right of S: 包含: chunkId, deviceMac,<br/>firmwareId, totalChecksum
+    S->>S: 廣播驗證階段
+
+    G->>G: 驗證所有韌體分片已接收
+    G->>G: 按順序重組完整韌體數據
+    G->>G: 計算並驗證總校驗和
+    G->>S: firmware_chunk_complete_ack (status: "success", finalChecksum)
+
+    G->>G: 開始韌體更新流程
+
+    alt 目標是 Gateway 自身
+        G->>G: 安裝 WiFi/藍牙韌體
+        G->>G: 重啟並應用新韌體
+    else 目標是下游設備
+        G->>T: 透過藍牙發送完整韌體數據
+        T->>T: 安裝韌體
+        T->>G: 安裝完成確認
+    end
+
+    alt 韌體更新成功
+        Note over G: 韌體更新結果通過下次 gatewayInfo 回報
+        G->>S: gatewayInfo (新韌體版本)
+        S->>S: 檢查韌體版本變化確認更新成功
+    else 韌體更新失敗
+        G->>S: firmware_update_error (錯誤代碼和訊息)
+        S->>S: 轉發錯誤給前端客戶端
+        G->>S: gatewayInfo (原韌體版本)
+        S->>S: 確認韌體版本未變化，更新失敗
+    end
+```
+
+## 附錄 D：錯誤處理流程圖
 
 ```mermaid
 flowchart TD
@@ -1442,7 +2156,7 @@ flowchart TD
     W --> Y
 ```
 
-## 附錄 C：設備生命週期管理
+## 附錄 E：設備生命週期管理
 
 ### 1. 設備狀態轉換圖
 
@@ -1498,7 +2212,7 @@ class DeviceLifecycleManager:
             await asyncio.sleep(30)  # 每 30 秒檢查一次
 ```
 
-## 附錄 D：性能優化建議
+## 附錄 F：性能優化建議
 
 ### 1. 消息批處理
 
@@ -1563,7 +2277,7 @@ class ConnectionPool:
             self.connection_queue.put_nowait(True)
 ```
 
-## 附錄 E：測試和調試
+## 附錄 G：測試和調試
 
 ### 1. 單元測試範例
 
@@ -1742,16 +2456,28 @@ class HealthMonitor:
 5. **性能優化建議**
 6. **測試和調試工具**
 7. **部署檢查清單**
+8. **📊 詳細時序圖**：圖片傳輸和韌體傳輸的完整流程圖
 
 開發人員可以直接基於這些內容進行實際的 Gateway 和 Device 程序開發。
 
 ---
 
-**最後更新**: 2025年6月
-**版本**: 2.2.0 - 分片決策邏輯增強
+**最後更新**: 2025年7月
+**版本**: 2.5.0 - 錯誤處理增強版
 **主要更新**:
-- **兩階段分片決策邏輯**: 新增詳細的分片決策流程說明
-- **maxSingleMessageSize 參數**: 新增 JSON 訊息大小限制參數
+- **📊 函數呼叫時序圖**: 新增圖片傳輸和韌體傳輸的詳細時序圖
+- **🖼️ 圖片傳輸流程**: 直接傳輸和分片傳輸的完整時序圖
+- **🔧 韌體傳輸流程**: 直接傳輸和分片傳輸的完整時序圖
+- **兩階段分片決策邏輯**: 詳細的分片決策流程說明
+- **maxSingleMessageSize 參數**: JSON 訊息大小限制參數
 - **智能分片切換**: 當 rawdata 小但 JSON 訊息大時自動切換到分片傳輸
 - **參數設定指南**: 提供 maxChunkSize 和 maxSingleMessageSize 的設定建議
-- **supportedFormat 參數**: 新增 rawdata 格式偏好設定
+- **supportedFormat 參數**: rawdata 格式偏好設定
+- **韌體傳輸支援**: 完整的韌體更新流程和時序圖
+- **🔧 韌體更新流程修正**: 明確 Gateway 不需要發送 `firmware_update_progress` 和 `firmware_update_complete`
+- **📊 韌體結果確認**: 韌體更新結果通過 `gatewayInfo` 中的韌體版本變化確認
+- **🎯 實作指導優化**: 為裝置人員提供更準確的開發指導
+- **🚨 錯誤處理增強**: 新增 `firmware_update_error` 消息支援，Gateway 可主動報告韌體更新錯誤
+- **⏱️ ACK Timeout 機制**: 完善的 timeout 處理，確保傳輸問題能正確告知用戶
+- **🧪 錯誤模擬功能**: test-ws-client-interactive.js 新增 `firmware-error` 命令支援錯誤測試
+- **📋 錯誤處理流程**: 詳細的錯誤處理流程說明，包含 ACK 錯誤和專用錯誤消息兩種方式
