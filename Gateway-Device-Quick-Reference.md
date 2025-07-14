@@ -39,13 +39,15 @@ flowchart TD
 ```
 
 ### 2. 必要的消息類型
-- **發送**: `ping`, `gatewayInfo`, `deviceStatus`, `chunk_start_ack`, `chunk_ack`, `chunk_complete_ack`
-- **接收**: `welcome`, `pong`, `gatewayInfoAck`, `deviceStatusAck`, `update_preview`, `image_chunk_start`, `image_chunk_complete`
-- **二進制**: 分片數據（嵌入式 Index 模式）
+- **發送**: `ping`, `gatewayInfo`, `deviceStatus`, `chunk_start_ack`, `chunk_ack`, `chunk_complete_ack`, `firmware_chunk_start_ack`, `firmware_chunk_ack`, `firmware_chunk_complete_ack`, `firmware_update_ack`, `firmware_update_error`
+- **接收**: `welcome`, `pong`, `gatewayInfoAck`, `deviceStatusAck`, `update_preview`, `image_chunk_start`, `image_chunk_complete`, `firmware_chunk_start`, `firmware_update`, `firmware_chunk_complete`
+- **二進制**: 分片數據（嵌入式 Index 模式）- 圖片和韌體
 
 ## 📨 消息格式速查
 
 ### 發送消息 (Gateway → Server)
+
+**重要說明**: 韌體更新結果通過 `gatewayInfo` 中的韌體版本變化來確認。
 
 #### ping (心跳)
 ```json
@@ -62,7 +64,8 @@ flowchart TD
   "type": "gatewayInfo",
   "info": {
     "macAddress": "AA:BB:CC:DD:EE:FF",  // 必須與 Token 中的 MAC 一致
-    "model": "Gateway Model 003",
+    "model": "Gateway Module 003",
+    "hardwareVersion": "1.0.0.1",
     "wifiFirmwareVersion": "1.0.0",
     "btFirmwareVersion": "2.0.0",
     "ipAddress": "192.168.1.100",
@@ -80,6 +83,14 @@ flowchart TD
 }
 ```
 **發送時機**: 收到 welcome 後立即發送，之後每 30 秒
+**字段說明**:
+- `macAddress`: 網關 MAC 地址 (必須與 Token 中的 MAC 一致)
+- `model`: 網關模組 (如 "Gateway Module 003")
+- `hardwareVersion`: 硬體版本 (x.x.x.x格式)
+- `wifiFirmwareVersion`: WiFi 固件版本
+- `btFirmwareVersion`: 藍牙固件版本
+- `ipAddress`: 當前 IP 地址
+
 **重要**: `chunkingSupport` 決定 Server 是否對該 Gateway 啟用分片傳輸
 
 **分片決策邏輯**:
@@ -94,6 +105,9 @@ flowchart TD
   "devices": [
     {
       "macAddress": "11:22:33:44:55:66",
+      "model": "EPD-2.9-BW",
+      "hardwareVersion": "1.0.0.1",
+      "firmwareVersion": "1.2.3",
       "status": "online",
       "data": {
         "size": "2.9\"",
@@ -107,6 +121,18 @@ flowchart TD
 }
 ```
 **頻率**: 每 5 秒
+**字段說明**:
+- `macAddress`: 設備 MAC 地址 (必填)
+- `model`: 設備模組 (如 "EPD-2.9-BW", "EPD-4.2-BWR")
+- `hardwareVersion`: 硬體版本 (x.x.x.x格式)
+- `firmwareVersion`: 韌體版本
+- `status`: 設備狀態 ("online"/"offline")
+- `data.size`: 螢幕尺寸 (如 "2.9\"", "4.2\"")
+- `data.battery`: 電池電量 (0-100)
+- `data.rssi`: 訊號強度 (dBm)
+- `data.colorType`: 顏色類型 ("BW", "BWR")
+- `data.imageCode`: 圖片代碼 (可選，只有本地有時才包含)
+
 **注意**: 不包含 `dataId`，這是由前端或API控制的欄位
 
 #### chunk_start_ack (分片開始確認)
@@ -150,6 +176,45 @@ flowchart TD
 **發送時機**: 收到 `image_chunk_complete` 後立即發送
 **status 值**: `"success"` (成功完成) | `"error"` (重組失敗)
 
+#### firmware_chunk_start_ack (韌體分片開始確認)
+```json
+{
+  "type": "firmware_chunk_start_ack",
+  "chunkId": "firmware_chunk_12345",
+  "status": "ready",
+  "message": null,
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+**發送時機**: 收到 `firmware_chunk_start` 後立即發送
+**status 值**: `"ready"` (準備就緒) | `"error"` (錯誤)
+
+#### firmware_update_error (韌體更新錯誤)
+```json
+{
+  "type": "firmware_update_error",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "errorCode": "CHECKSUM_MISMATCH",
+  "errorMessage": "韌體校驗失敗",
+  "stage": "installing",
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+**發送時機**: 韌體更新過程中發生錯誤時發送
+**常見錯誤代碼**:
+- `CHECKSUM_MISMATCH` - 校驗和不匹配
+- `INSUFFICIENT_MEMORY` - 記憶體不足
+- `INCOMPATIBLE_VERSION` - 版本不相容
+- `UPDATE_FAILED` - 安裝失敗
+
+**韌體更新結果回報**:
+韌體更新的結果通過以下方式確認：
+1. **立即確認**: `firmware_update_ack` 或 `firmware_chunk_complete_ack` 表示韌體接收完成
+2. **最終結果**: 通過下次 `gatewayInfo` 消息中的韌體版本變化來確認
+   - 成功: 韌體版本更新為新版本
+   - 失敗: 韌體版本保持原版本
+
 ### 接收消息 (Server → Gateway)
 
 #### welcome (歡迎)
@@ -185,7 +250,7 @@ flowchart TD
   "imageCode": "87654321",
   "rawdata": [255, 255, 0, 128, 64, ...],  // EPD 原始數據陣列 (Uint8Array)
   "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
-  "timestamp": "2021-12-31T16:00:00.000Z"
+  "timestamp": 1640995200000  // 統一使用數字格式
 }
 ```
 **處理**:
@@ -206,7 +271,7 @@ flowchart TD
   "indexSize": 4,
   "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
   "mode": "embedded_index",
-  "timestamp": "2021-12-31T16:00:00.000Z"
+  "timestamp": 1640995200000  // 統一使用數字格式
 }
 ```
 **處理**:
@@ -223,7 +288,7 @@ flowchart TD
   "deviceMac": "11:22:33:44:55:66",
   "imageCode": "87654321",
   "totalChecksum": "a1b2",
-  "timestamp": "2021-12-31T16:00:00.000Z"
+  "timestamp": 1640995200000  // 統一使用數字格式
 }
 ```
 **處理**:
@@ -231,6 +296,79 @@ flowchart TD
 2. 重組完整數據
 3. 更新本地 imageCode
 4. 發送 `chunk_complete_ack` 確認
+
+#### firmware_chunk_start (韌體分片傳輸開始)
+```json
+{
+  "type": "firmware_chunk_start",
+  "chunkId": "firmware_chunk_12345",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "totalChunks": 128,
+  "totalSize": 524288,
+  "chunkSize": 4096,
+  "indexSize": 4,
+  "dataType": "firmware",
+  "mode": "embedded_index",
+  "firmwareInfo": {
+    "version": "2.1.0",
+    "deviceType": "gateway",
+    "model": "ESP32-S3",
+    "functionType": "wifi",
+    "checksum": "a1b2c3d4e5f6"
+  },
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+**處理**:
+1. 準備接收韌體分片數據
+2. 驗證韌體相容性（版本、模組等）
+3. 發送 `firmware_chunk_start_ack` 確認
+4. 等待二進制韌體分片數據
+
+#### firmware_update (韌體直接更新)
+```json
+{
+  "type": "firmware_update",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "firmwareData": [0x1F, 0x8B, 0x08, ...],
+  "dataType": "firmware",
+  "firmwareInfo": {
+    "version": "2.1.0",
+    "deviceType": "gateway",
+    "model": "ESP32-S3",
+    "functionType": "wifi",
+    "checksum": "a1b2c3d4e5f6"
+  },
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+**處理**:
+1. 驗證韌體相容性
+2. 驗證校驗和
+3. 發送 `firmware_update_ack` 確認
+4. 開始韌體更新流程
+5. 定期發送 `firmware_update_progress` 進度
+6. 完成後發送 `firmware_update_complete`
+
+#### firmware_chunk_complete (韌體分片傳輸完成)
+```json
+{
+  "type": "firmware_chunk_complete",
+  "chunkId": "firmware_chunk_12345",
+  "deviceMac": "11:22:33:44:55:66",
+  "firmwareId": "fw_abc123",
+  "totalChecksum": "a1b2c3d4e5f6",
+  "timestamp": 1640995200000  // 統一使用數字格式
+}
+```
+**處理**:
+1. 驗證所有韌體分片已接收
+2. 重組完整韌體數據
+3. 驗證總校驗和
+4. 發送 `firmware_chunk_complete_ack` 確認
+5. 開始韌體更新流程
 
 ## 📊 數據格式處理
 
@@ -274,6 +412,7 @@ def process_data(rawdata, data_type):
 - 不匹配會導致連線被強制中斷並記錄安全事件
 
 ### 2. dataId 和 imageCode 處理
+- **dataId**: 不應包含在設備回報中，這是由前端或API控制的欄位
 - **imageCode**: 設備回報時不主動包含 `imageCode`
 - 只有在收到 Server 圖像更新後才在本地存儲 `imageCode`
 - 下次 `deviceStatus` 回報時包含更新後的 `imageCode`
@@ -345,12 +484,136 @@ def process_data(rawdata, data_type):
 | 心跳超時 | >30秒無ping | 1000 | 檢查網絡，重連 |
 | 長時間無活動 | >60秒無消息 | 1000 | 檢查程序狀態 |
 
+## � 函數呼叫時序圖
+
+### 🖼️ 圖片傳輸時序圖
+
+#### 直接圖片傳輸
+```mermaid
+sequenceDiagram
+    participant S as Server
+    participant G as Gateway
+    participant D as EPD設備
+
+    Note over S,D: 直接圖片傳輸 (小圖片)
+
+    S->>S: 判斷傳輸方式
+    S->>G: update_preview
+    Note right of S: deviceMac, imageCode,<br/>rawdata, dataType
+
+    G->>G: 處理 rawdata (根據 dataType)
+    G->>G: 更新本地 imageCode
+    G->>D: 發送 EPD 數據 (藍牙)
+    D->>G: 更新確認
+    G->>S: deviceStatus (含新 imageCode)
+```
+
+#### 分片圖片傳輸
+```mermaid
+sequenceDiagram
+    participant S as Server
+    participant G as Gateway
+    participant D as EPD設備
+
+    Note over S,D: 分片圖片傳輸 (大圖片)
+
+    S->>S: 判斷需要分片傳輸
+    S->>G: image_chunk_start
+    Note right of S: chunkId, totalChunks,<br/>chunkSize, dataType
+    G->>S: chunk_start_ack (ready)
+
+    loop 每個分片
+        S->>G: 二進制分片 [4B:index][data]
+        G->>S: chunk_ack (received)
+    end
+
+    S->>G: image_chunk_complete
+    G->>G: 重組數據 + 處理 dataType
+    G->>S: chunk_complete_ack (success)
+    G->>D: 發送完整 EPD 數據 (藍牙)
+    D->>G: 更新確認
+    G->>S: deviceStatus (含新 imageCode)
+```
+
+### 🔧 韌體傳輸時序圖
+
+#### 直接韌體傳輸
+```mermaid
+sequenceDiagram
+    participant S as Server
+    participant G as Gateway
+    participant T as 目標設備
+
+    Note over S,T: 直接韌體傳輸 (小韌體)
+
+    S->>S: 判斷傳輸方式
+    S->>G: firmware_update
+    Note right of S: deviceMac, firmwareId,<br/>firmwareData, firmwareInfo
+
+    G->>G: 驗證韌體相容性
+    G->>S: firmware_update_ack (success)
+
+    alt Gateway 自身
+        G->>G: 安裝韌體並重啟
+    else 下游設備
+        G->>T: 發送韌體 (藍牙)
+        T->>G: 安裝完成確認
+    end
+
+    alt 韌體更新成功
+        G->>S: gatewayInfo (新韌體版本)
+    else 韌體更新失敗
+        G->>S: firmware_update_error (錯誤代碼)
+        G->>S: gatewayInfo (原韌體版本)
+    end
+```
+
+#### 分片韌體傳輸
+```mermaid
+sequenceDiagram
+    participant S as Server
+    participant G as Gateway
+    participant T as 目標設備
+
+    Note over S,T: 分片韌體傳輸 (大韌體)
+
+    S->>S: 判斷需要分片傳輸
+    S->>G: firmware_chunk_start
+    Note right of S: chunkId, totalChunks,<br/>firmwareInfo
+    G->>S: firmware_chunk_start_ack (ready)
+
+    loop 每個分片
+        S->>G: 二進制韌體分片 [4B:index][data]
+        G->>S: firmware_chunk_ack (received)
+    end
+
+    S->>G: firmware_chunk_complete
+    G->>G: 重組韌體數據 + 驗證校驗和
+    G->>S: firmware_chunk_complete_ack (success)
+
+    alt Gateway 自身
+        G->>G: 安裝韌體並重啟
+    else 下游設備
+        G->>T: 發送完整韌體 (藍牙)
+        T->>G: 安裝完成確認
+    end
+
+    alt 韌體更新成功
+        G->>S: gatewayInfo (新韌體版本)
+    else 韌體更新失敗
+        G->>S: firmware_update_error (錯誤代碼)
+        G->>S: gatewayInfo (原韌體版本)
+    end
+```
+
 ## 🔗 相關文檔
 
 - [完整實作指南](./Gateway-Device-Implementation-Guide.md)
 
-**最後更新**: 2025年6月
-**版本**: 2.2.0 - 分片決策邏輯增強
+---
+
+**最後更新**: 2025年7月
+**版本**: 2.5.0 - 錯誤處理增強版
 **新功能**:
 - 嵌入式 Index 分片傳輸
 - Gateway 能力上報機制
@@ -361,3 +624,12 @@ def process_data(rawdata, data_type):
 - **數據處理流程**: 詳細的壓縮數據處理說明
 - **兩階段分片決策**: 新增 `maxSingleMessageSize` 參數，支援更智能的分片決策
 - **JSON 訊息大小檢查**: 當 rawdata 小但 JSON 訊息大時自動切換到分片傳輸
+- **📊 函數呼叫時序圖**: 新增圖片傳輸和韌體傳輸的詳細時序圖
+- **🖼️ 圖片傳輸流程**: 直接傳輸和分片傳輸的完整時序圖
+- **🔧 韌體傳輸流程**: 直接傳輸和分片傳輸的完整時序圖
+- **📋 測試步驟增強**: 新增分片傳輸測試項目
+- **🔧 韌體更新流程修正**: 明確 Gateway 不需要發送 `firmware_update_progress` 和 `firmware_update_complete`
+- **📊 韌體結果確認**: 韌體更新結果通過 `gatewayInfo` 中的韌體版本變化確認
+- **🚨 錯誤處理增強**: 新增 `firmware_update_error` 消息支援，Gateway 可主動報告韌體更新錯誤
+- **⏱️ ACK Timeout 機制**: 完善的 timeout 處理，確保傳輸問題能正確告知用戶
+- **🧪 錯誤模擬功能**: test-ws-client-interactive.js 新增 `firmware-error` 命令支援錯誤測試
