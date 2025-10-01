@@ -31,11 +31,13 @@ flowchart TD
 ### 1. 連接流程
 ```
 1. 用戶在 Server Web 新增 Gateway
-2. 點擊鑰匙圖標獲取 Config 資訊
-3. 將 Config 貼到 Gateway 設備
-4. Gateway 建立 WebSocket 連接: ws://server:port/ws?token=JWT_TOKEN
-5. 收到 welcome 消息後發送 gatewayInfo
-6. 開始定期發送 ping (25秒) 和 deviceStatus (5秒)
+2. 點擊鑰匙圖標獲取編碼的 Config 資訊
+3. 將編碼的 Config 貼到 Gateway 設備
+4. Gateway 使用位元移位算法解碼 Config 資訊
+5. Gateway 解析解碼後的 JSON 配置
+6. Gateway 建立 WebSocket 連接: ws://server:port/ws?token=JWT_TOKEN
+7. 收到 welcome 消息後發送 gatewayInfo
+8. 開始定期發送 ping (25秒) 和 deviceStatus (5秒)
 ```
 
 ### 2. 必要的消息類型
@@ -250,7 +252,11 @@ flowchart TD
   "imageCode": "87654321",
   "rawdata": [255, 255, 0, 128, 64, ...],  // EPD 原始數據陣列 (Uint8Array)
   "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
-  "timestamp": 1640995200000  // 統一使用數字格式
+  "timestamp": 1640995200000,  // 統一使用數字格式
+  // 當 dataType 為 "runlendata" 時的額外字段
+  "compressionRatio": 65.2,    // 壓縮率百分比
+  "originalSize": 9472,        // 原始數據大小（bytes）
+  "compressedSize": 6180       // 壓縮後數據大小（bytes）
 }
 ```
 **處理**:
@@ -271,7 +277,11 @@ flowchart TD
   "indexSize": 4,
   "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
   "mode": "embedded_index",
-  "timestamp": 1640995200000  // 統一使用數字格式
+  "timestamp": 1640995200000,  // 統一使用數字格式
+  // 當 dataType 為 "runlendata" 時的額外字段
+  "compressionRatio": 65.2,    // 壓縮率百分比
+  "originalSize": 9472,        // 原始數據大小（bytes）
+  "compressedSize": 6180       // 壓縮後數據大小（bytes）
 }
 ```
 **處理**:
@@ -370,11 +380,106 @@ flowchart TD
 4. 發送 `firmware_chunk_complete_ack` 確認
 5. 開始韌體更新流程
 
+## 🔐 WebSocket 登入資訊編碼解碼
+
+### 編碼機制
+- **基礎編碼**: Base64
+- **位元操作**: 位元移位 (右移1位，LSB移至MSB)
+- **無需外部函式庫**: 使用內建功能
+- **輕量級**: 處理速度快
+
+### 原始配置格式 (編碼前)
+```json
+{
+  "url": "ws://192.168.0.185:3001/ws/store/KH001/gateway/689af2455583fa72878cff64",
+  "path": "/ws/store/KH001/gateway/689af2455583fa72878cff64",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "protocol": "json"
+}
+```
+
+### 編碼後格式
+```
+VGhpcyBpcyBhbiBlbmNvZGVkIHN0cmluZyBleGFtcGxl...
+```
+
+### Python 解碼範例
+```python
+import base64
+import json
+
+def decode_ws_info(encoded_data: str) -> dict:
+    # 1. 解碼外層 Base64
+    encoded_bytes = base64.b64decode(encoded_data)
+
+    # 2. 反向位元移位操作
+    decoded_bytes = bytearray()
+    for byte in encoded_bytes:
+        msb = (byte & 0x80) >> 7    # 取得最高位元
+        shifted = (byte & 0x7F) << 1 # 左移 1 位
+        decoded = shifted | msb      # MSB 移至 LSB
+        decoded_bytes.append(decoded)
+
+    # 3. 轉換為字串並解碼 Base64
+    base64_string = decoded_bytes.decode('ascii')
+    json_string = base64.b64decode(base64_string).decode('utf-8')
+
+    # 4. 解析 JSON
+    return json.loads(json_string)
+
+# 使用範例
+encoded_config = "從剪貼板獲取的編碼字串"
+ws_config = decode_ws_info(encoded_config)
+```
+
+### C++ 解碼範例
+```cpp
+#include <string>
+#include <vector>
+#include <json/json.h>
+
+Json::Value decodeWebSocketInfo(const std::string& encodedData) {
+    // 1. 解碼外層 Base64
+    std::vector<unsigned char> encodedBytes = base64_decode(encodedData);
+
+    // 2. 反向位元移位操作
+    std::vector<unsigned char> decodedBytes;
+    for (unsigned char encoded : encodedBytes) {
+        unsigned char msb = (encoded & 0x80) >> 7;    // 取得最高位元
+        unsigned char shifted = (encoded & 0x7F) << 1; // 左移 1 位
+        unsigned char decoded = shifted | msb;          // MSB 移至 LSB
+        decodedBytes.push_back(decoded);
+    }
+
+    // 3. 轉換為字串並解碼 Base64
+    std::string base64String(decodedBytes.begin(), decodedBytes.end());
+    std::vector<unsigned char> jsonBytes = base64_decode(base64String);
+    std::string jsonString(jsonBytes.begin(), jsonBytes.end());
+
+    // 4. 解析 JSON
+    Json::Value root;
+    Json::Reader reader;
+    reader.parse(jsonString, root);
+
+    return root;
+}
+```
+
 ## 📊 數據格式處理
 
 ### dataType 格式說明
 - **`"rawdata"`**: 未壓縮的原始 EPD 數據，直接使用
 - **`"runlendata"`**: 使用 Run-Length Encoding 壓縮的數據，需要解壓縮
+
+### 壓縮率自動回退機制
+- Server 會自動計算壓縮率（包含 ImageInfo 大小變化）
+- 當壓縮率 > 99% 時，自動回退到 `rawdata` 格式
+- 確保傳輸效率，避免壓縮效果不佳時的額外開銷
+
+### 壓縮率參數（僅當 dataType 為 "runlendata" 時提供）
+- `compressionRatio`: 壓縮率百分比（例如：65.2 表示壓縮到原始大小的 65.2%）
+- `originalSize`: 原始數據大小（bytes）
+- `compressedSize`: 壓縮後數據大小（bytes）
 
 ### RLE 編碼格式
 1. **重複序列** (runLength >= 2):
@@ -387,7 +492,8 @@ flowchart TD
 
 **重要**:
 - bit7 是最高位元 (MSB)
-- 壓縮的只有 EPD 像素數據，不包含 ImageInfo 結構 (12 bytes) 頭部
+- 壓縮的只有 EPD 像素數據，不包含 ImageInfo 結構頭部
+- runlendata 格式的 ImageInfo 為 16 bytes（包含 datalen 字段），rawdata 格式為 12 bytes
 - 不包含 chunk 的 index 資訊
 
 ### 數據處理流程
@@ -396,13 +502,15 @@ def process_data(rawdata, data_type):
     if data_type == "rawdata":
         return rawdata  # 直接使用
     elif data_type == "runlendata":
-        # 分離 ImageInfo (12 bytes) 和壓縮的像素數據
-        image_info = rawdata[:12]
-        compressed_pixels = rawdata[12:]
+        # 分離 ImageInfo (16 bytes，包含 datalen) 和壓縮的像素數據
+        extended_image_info = rawdata[:16]
+        compressed_pixels = rawdata[16:]
         # 解壓縮像素數據
         decompressed_pixels = decompress_rle(compressed_pixels)
-        # 重新組合
-        return image_info + decompressed_pixels
+        # 提取標準的 ImageInfo（前 12 bytes，不包含 datalen）
+        standard_image_info = extended_image_info[:12]
+        # 重新組合（使用標準的 12 bytes ImageInfo）
+        return standard_image_info + decompressed_pixels
 ```
 
 ## ⚠️ 重要注意事項
@@ -448,7 +556,19 @@ def process_data(rawdata, data_type):
 - 當操作成功時，通常為 `null`
 - 幫助調試和錯誤追蹤
 
-### 6. 錯誤處理
+### 6. 超時設定
+
+**Server 端等待 Gateway 回應的超時時間**：
+- **Start ACK timeout**: 60秒 (chunk_start_ack, firmware_chunk_start_ack)
+- **Chunk ACK timeout**: 5秒 (chunk_ack, firmware_chunk_ack)
+- **Complete ACK timeout**: 60秒 (chunk_complete_ack, firmware_chunk_complete_ack)
+
+**重要說明**：
+- Start ACK 和 Complete ACK 超時時間較長（60秒），因為 Gateway 需要時間重組數據和處理
+- 如果 Gateway 無法在超時時間內回應，Server 會標記傳輸失敗
+- Gateway 應盡快發送 ACK 回應，避免超時
+
+### 7. 錯誤處理
 ```json
 {
   "type": "gatewayInfoAck",
@@ -612,8 +732,8 @@ sequenceDiagram
 
 ---
 
-**最後更新**: 2025年7月
-**版本**: 2.5.0 - 錯誤處理增強版
+**最後更新**: 2025年10月
+**版本**: 2.6.0 - WebSocket 登入資訊編碼版
 **新功能**:
 - 嵌入式 Index 分片傳輸
 - Gateway 能力上報機制
@@ -633,3 +753,7 @@ sequenceDiagram
 - **🚨 錯誤處理增強**: 新增 `firmware_update_error` 消息支援，Gateway 可主動報告韌體更新錯誤
 - **⏱️ ACK Timeout 機制**: 完善的 timeout 處理，確保傳輸問題能正確告知用戶
 - **🧪 錯誤模擬功能**: test-ws-client-interactive.js 新增 `firmware-error` 命令支援錯誤測試
+- **🔐 WebSocket 登入資訊編碼**: 新增 Base64 + 位元移位編碼機制，無需外部函式庫
+- **📋 編碼解碼文件**: 提供完整的 Python、C++、JavaScript 解碼範例程式碼
+- **🔧 Gateway 整合指南**: 詳細說明如何在 Gateway 中整合解碼功能
+- **❓ 編碼相關常見問題**: 新增解碼失敗、實作細節等常見問題解答
