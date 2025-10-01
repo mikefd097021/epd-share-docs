@@ -65,30 +65,35 @@ flowchart TD
 3. [WebSocket 連接流程](#websocket-連接流程)
 4. [消息協議規範](#消息協議規範)
 5. [失敗狀況與錯誤回應](#失敗狀況與錯誤回應)
-6. [Gateway 內部架構](#gateway-內部架構)
-7. [Device 管理架構](#device-管理架構)
-8. [錯誤處理機制](#錯誤處理機制)
-9. [安全考量](#安全考量)
-10. [實作範例](#實作範例)
+6. [WebSocket 登入資訊編碼](#websocket-登入資訊編碼)
+7. [Gateway 內部架構](#gateway-內部架構)
+8. [Device 管理架構](#device-管理架構)
+9. [錯誤處理機制](#錯誤處理機制)
+10. [安全考量](#安全考量)
+11. [實作範例](#實作範例)
 
 ## 操作流程詳解
 
 ### 1. Server 端準備
 1. **新增 Gateway**: 用戶在 Server Web 管理界面新增 Gateway 記錄
 2. **獲取 Config**: 點擊鑰匙圖標按鈕，複製包含 JWT Token 的 Gateway Config 資訊
-3. **Config 格式**:
+3. **Config 格式** (加密前的原始格式):
    ```json
    {
      "url": "ws://server-ip:port/ws",
+     "path": "/ws/store/storeId/gateway/gatewayId",
      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
      "protocol": "json"
    }
    ```
+4. **編碼處理**: 系統使用 Base64 編碼和位元移位對整個 JSON 進行編碼
+5. **複製格式**: 用戶實際複製到剪貼板的是編碼後的字串
 
 ### 2. Gateway 端配置
-1. **接收 Config**: 將複製的 Config 資訊貼到 Gateway 設備
-2. **解析 Config**: Gateway 解析 JSON 格式的配置信息
-3. **建立連接**: 使用 Config 中的 URL 和 Token 建立 WebSocket 連接
+1. **接收 Config**: 將複製的編碼 Config 資訊貼到 Gateway 設備
+2. **解碼 Config**: Gateway 使用相同的算法解碼配置信息
+3. **解析 Config**: Gateway 解析解碼後的 JSON 格式配置信息
+4. **建立連接**: 使用 Config 中的 URL 和 Token 建立 WebSocket 連接
 
 ### 3. 連接驗證流程
 1. **JWT 驗證**: Server 驗證 Token 的有效性、類型、MAC 地址等
@@ -470,7 +475,11 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
   "imageCode": "87654321",
   "rawdata": [255, 255, 0, 128, 64, ...],  // EPD 原始數據陣列 (Uint8Array)
   "dataType": "rawdata",  // 數據格式類型：rawdata, runlendata 等
-  "timestamp": 1640995200000  // 統一使用數字格式
+  "timestamp": 1640995200000,  // 統一使用數字格式
+  // 當 dataType 為 "runlendata" 時的額外字段
+  "compressionRatio": 65.2,    // 壓縮率百分比
+  "originalSize": 9472,        // 原始數據大小（bytes）
+  "compressedSize": 6180       // 壓縮後數據大小（bytes）
 }
 ```
 
@@ -492,6 +501,16 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
 - `"runlendata"`: 使用 Run-Length Encoding 壓縮的數據
 - 其他格式可能在未來添加
 
+**壓縮率自動回退機制：**
+- Server 會自動計算壓縮率（包含 ImageInfo 大小變化）
+- 當壓縮率 > 99% 時，自動回退到 `rawdata` 格式
+- 確保傳輸效率，避免壓縮效果不佳時的額外開銷
+
+**壓縮率參數說明（僅當 dataType 為 "runlendata" 時提供）：**
+- `compressionRatio`: 壓縮率百分比（例如：65.2 表示壓縮到原始大小的 65.2%）
+- `originalSize`: 原始數據大小（bytes）
+- `compressedSize`: 壓縮後數據大小（bytes）
+
 #### 2.6 image_chunk_start 消息 (分片傳輸開始)
 ```json
 {
@@ -505,7 +524,11 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
   "indexSize": 4,
   "dataType": "runlendata",  // 數據格式類型：rawdata, runlendata 等
   "mode": "embedded_index",
-  "timestamp": 1640995200000  // 統一使用數字格式
+  "timestamp": 1640995200000,  // 統一使用數字格式
+  // 當 dataType 為 "runlendata" 時的額外字段
+  "compressionRatio": 65.2,    // 壓縮率百分比
+  "originalSize": 9472,        // 原始數據大小（bytes）
+  "compressedSize": 6180       // 壓縮後數據大小（bytes）
 }
 ```
 
@@ -544,6 +567,16 @@ Server 會根據以下兩階段邏輯決定是否使用分片傳輸：
 - 必須按順序重組分片，不能遺漏任何分片
 - 每個分片接收後必須立即發送 ACK
 - 超時未收到分片時，Server 會自動重傳
+
+**Server 端 ACK 超時設定：**
+- **Start ACK timeout**: 60秒 (chunk_start_ack, firmware_chunk_start_ack)
+- **Chunk ACK timeout**: 5秒 (chunk_ack, firmware_chunk_ack)
+- **Complete ACK timeout**: 60秒 (chunk_complete_ack, firmware_chunk_complete_ack)
+
+**超時處理說明：**
+- Start ACK 和 Complete ACK 超時時間較長（60秒），因為 Gateway 需要時間重組數據和處理
+- 如果 Gateway 無法在超時時間內回應，Server 會標記傳輸失敗
+- Gateway 應盡快發送 ACK 回應，避免超時導致傳輸失敗
 
 #### 2.8 image_chunk_complete 消息 (分片傳輸完成)
 ```json
@@ -802,7 +835,7 @@ Server 會根據數據特性和 Gateway 能力選擇最適合的數據格式：
 
 #### 1.2 runlendata (RLE 壓縮格式)
 - **用途**: 使用 Run-Length Encoding 壓縮的數據
-- **結構**: ImageInfo (12 bytes) + 壓縮後的像素數據
+- **結構**: ImageInfo (16 bytes，包含 datalen 字段) + 壓縮後的像素數據
 - **處理**: 需要解壓縮後才能使用
 
 ### 2. RLE 編碼格式詳解
@@ -822,7 +855,8 @@ Run-Length Encoding 使用以下格式：
 
 **重要說明**:
 - bit7 是最高位元 (MSB)
-- 壓縮的只有 EPD 像素數據，不包含 ImageInfo 結構 (12 bytes) 頭部
+- 壓縮的只有 EPD 像素數據，不包含 ImageInfo 結構頭部
+- runlendata 格式的 ImageInfo 為 16 bytes（包含 datalen 字段），rawdata 格式為 12 bytes
 - 不包含 chunk 的 index 資訊
 
 #### 2.2 解壓縮實現範例
@@ -873,14 +907,17 @@ def process_received_data(rawdata, data_type):
     elif data_type == "runlendata":
         # RLE 壓縮數據，需要解壓縮
         # 分離 ImageInfo 和壓縮的像素數據
-        image_info = rawdata[:12]  # 前 12 bytes 是 ImageInfo
-        compressed_pixels = rawdata[12:]  # 後續是壓縮的像素數據
+        extended_image_info = rawdata[:16]  # 前 16 bytes 是擴展的 ImageInfo（包含 datalen）
+        compressed_pixels = rawdata[16:]  # 後續是壓縮的像素數據
 
         # 解壓縮像素數據
         decompressed_pixels = decompress_rle_data(compressed_pixels)
 
-        # 重新組合完整數據
-        complete_data = image_info + decompressed_pixels
+        # 提取標準的 ImageInfo（前 12 bytes，不包含 datalen）
+        standard_image_info = extended_image_info[:12]
+
+        # 重新組合完整數據（使用標準的 12 bytes ImageInfo）
+        complete_data = standard_image_info + decompressed_pixels
         return complete_data
     else:
         raise Exception(f"Unsupported data type: {data_type}")
@@ -1114,6 +1151,209 @@ def handle_connection_error(self, error_code, reason):
         logger.warning(f"連接錯誤: {error_code} - {reason}")
         return True
 ```
+
+## WebSocket 登入資訊編碼
+
+### 1. 編碼機制概述
+
+為了增強 Gateway 設備配置的安全性，系統對 WebSocket 登入資訊實施了簡單的編碼機制。當用戶在網關管理頁面點擊複製 WebSocket 登入資訊時，系統會對整串 JSON 資料進行編碼後再複製到剪貼板。
+
+### 2. 編碼規格
+
+#### 2.1 編碼參數
+- **基礎編碼**: Base64
+- **位元操作**: 位元移位 (右移1位，LSB移至MSB)
+- **無需外部函式庫**: 使用瀏覽器和 Node.js 內建功能
+- **輕量級**: 處理速度快，資源消耗少
+
+#### 2.2 編碼流程
+
+1. **原始資料格式**:
+```json
+{
+  "url": "ws://192.168.0.185:3001/ws/store/KH001/gateway/689af2455583fa72878cff64",
+  "path": "/ws/store/KH001/gateway/689af2455583fa72878cff64",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJnYXRld2F5SWQiOiI2ODlhZjI0NTU1ODNmYTcyODc4Y2ZmNjQiLCJzdG9yZUlkIjoiS0gwMDEiLCJtYWNBZGRyZXNzIjoiQzg6RjA6OUU6RjE6QzE6MjQiLCJ0eXBlIjoiZ2F0ZXdheSIsImlhdCI6MTc1NDk4NTA0MSwiZXhwIjoxNzU3NTc3MDQxfQ.JDLAAtQUSMA3OA6VkqRD8fIQjsiEHes5X90W-w2kpHE",
+  "protocol": "json"
+}
+```
+
+2. **編碼步驟**:
+   - 將 JSON 物件轉換為字串
+   - 進行 Base64 編碼
+   - 對每個位元組進行位元移位：取出最低位元(LSB)，右移1位，將LSB放到最高位元(MSB)
+   - 再次進行 Base64 編碼以確保可安全傳輸
+
+3. **編碼後格式**:
+```
+VGhpcyBpcyBhbiBlbmNvZGVkIHN0cmluZyBleGFtcGxl...
+```
+
+### 3. Gateway 端解碼實作
+
+#### 3.1 Python 解碼範例
+
+```python
+import base64
+import json
+
+def decode_ws_info(encoded_data: str) -> dict:
+    """
+    解碼 WebSocket 登入資訊
+
+    Args:
+        encoded_data: 編碼後的資料字串
+
+    Returns:
+        dict: 解碼後的 WebSocket 配置資訊
+
+    Raises:
+        ValueError: 解碼失敗或資料格式錯誤
+    """
+    try:
+        # 1. 解碼外層 Base64
+        encoded_bytes = base64.b64decode(encoded_data)
+
+        # 2. 反向位元移位操作
+        decoded_bytes = bytearray()
+        for byte in encoded_bytes:
+            # 取得最高位元 (MSB)
+            msb = (byte & 0x80) >> 7
+
+            # 左移 1 位
+            shifted = (byte & 0x7F) << 1
+
+            # 將原本的 MSB 放到最低位元 (LSB)
+            decoded = shifted | msb
+
+            decoded_bytes.append(decoded)
+
+        # 3. 將解碼後的位元組轉換為 Base64 字串
+        base64_string = decoded_bytes.decode('ascii')
+
+        # 4. 解碼 Base64
+        json_string = base64.b64decode(base64_string).decode('utf-8')
+
+        # 5. 解析 JSON
+        return json.loads(json_string)
+
+    except Exception as e:
+        raise ValueError(f"解碼失敗: {str(e)}")
+
+# 使用範例
+encoded_config = "從剪貼板獲取的編碼字串"
+try:
+    ws_config = decode_ws_info(encoded_config)
+    print(f"WebSocket URL: {ws_config['url']}")
+    print(f"Token: {ws_config['token']}")
+except ValueError as e:
+    print(f"錯誤: {e}")
+```
+
+#### 3.2 C++ 解碼範例
+
+```cpp
+#include <string>
+#include <vector>
+#include <json/json.h>
+
+class WebSocketDecoder {
+public:
+    Json::Value decodeWebSocketInfo(const std::string& encodedData) {
+        // 1. 解碼外層 Base64
+        std::vector<unsigned char> encodedBytes = base64_decode(encodedData);
+
+        // 2. 反向位元移位操作
+        std::vector<unsigned char> decodedBytes;
+        decodedBytes.reserve(encodedBytes.size());
+
+        for (unsigned char encoded : encodedBytes) {
+            // 取得最高位元 (MSB)
+            unsigned char msb = (encoded & 0x80) >> 7;
+
+            // 左移 1 位
+            unsigned char shifted = (encoded & 0x7F) << 1;
+
+            // 將原本的 MSB 放到最低位元 (LSB)
+            unsigned char decoded = shifted | msb;
+
+            decodedBytes.push_back(decoded);
+        }
+
+        // 3. 轉換為字串
+        std::string base64String(decodedBytes.begin(), decodedBytes.end());
+
+        // 4. 解碼內層 Base64
+        std::vector<unsigned char> jsonBytes = base64_decode(base64String);
+        std::string jsonString(jsonBytes.begin(), jsonBytes.end());
+
+        // 5. 解析 JSON
+        Json::Value root;
+        Json::Reader reader;
+        reader.parse(jsonString, root);
+
+        return root;
+    }
+
+private:
+    // 簡單的 Base64 解碼實作
+    std::vector<unsigned char> base64_decode(const std::string& encoded) {
+        // 這裡需要實作 Base64 解碼，或使用現有的函式庫
+        // 為了簡化，這裡省略實作細節
+        std::vector<unsigned char> result;
+        // ... Base64 解碼邏輯 ...
+        return result;
+    }
+};
+```
+
+### 4. 整合到 Gateway 實作
+
+#### 4.1 配置解碼流程
+
+```python
+class EPDGateway:
+    def __init__(self, encoded_config: str):
+        # 解碼配置
+        self.config = self.decode_config(encoded_config)
+        self.server_url = self.config['url']
+        self.token = self.config['token']
+        # ... 其他初始化
+
+    def decode_config(self, encoded_data: str) -> dict:
+        """解碼配置資訊"""
+        return decode_ws_info(encoded_data)
+
+    async def start(self):
+        """啟動 Gateway，使用解碼後的配置"""
+        url = f"{self.server_url}?token={self.token}"
+        async with websockets.connect(url) as websocket:
+            # ... WebSocket 連接邏輯
+```
+
+### 5. 安全考量
+
+#### 5.1 優點
+- **防止明文洩露**: 即使剪貼板內容被意外洩露，攻擊者也無法直接獲得 WebSocket 連接資訊
+- **簡化部署**: Gateway 開發人員只需要實作解碼邏輯，無需處理任何金鑰或密碼
+- **向後相容**: 不影響現有的 WebSocket 通信協議
+- **輕量級**: 無需外部函式庫，處理速度快，資源消耗少
+
+#### 5.2 限制
+- **簡單編碼**: 使用簡單的位元移位，安全性有限，主要用於防止意外洩露
+- **無完整性驗證**: 沒有額外的校驗機制來驗證資料完整性
+- **可逆性**: 編碼算法是可逆的，有一定技術能力的人可以解碼
+
+#### 5.3 實作注意事項
+1. **算法一致性**: 確保 Gateway 端的解碼邏輯與 Server 端的編碼邏輯完全一致
+2. **錯誤處理**: 妥善處理解碼失敗的情況
+3. **相依性管理**: 確保 Gateway 環境中有 Base64 解碼功能（通常內建）
+4. **測試驗證**: 在部署前進行完整的編碼解碼測試
+
+### 6. 相關文件
+
+- [加密解密詳細範例](./websocket-encryption/encryption-examples.md)
+- [加密機制說明](./websocket-encryption/README.md)
 
 ## Gateway 內部架構
 
@@ -1578,14 +1818,17 @@ class EPDGateway:
             rawdata_bytes = bytes(rawdata) if isinstance(rawdata, list) else rawdata
 
             # 分離 ImageInfo 和壓縮的像素數據
-            image_info = rawdata_bytes[:12]  # 前 12 bytes 是 ImageInfo
-            compressed_pixels = rawdata_bytes[12:]  # 後續是壓縮的像素數據
+            extended_image_info = rawdata_bytes[:16]  # 前 16 bytes 是擴展的 ImageInfo（包含 datalen）
+            compressed_pixels = rawdata_bytes[16:]  # 後續是壓縮的像素數據
 
             # 解壓縮像素數據
             decompressed_pixels = self.decompress_rle_data(compressed_pixels)
 
-            # 重新組合完整數據
-            complete_data = image_info + decompressed_pixels
+            # 提取標準的 ImageInfo（前 12 bytes，不包含 datalen）
+            standard_image_info = extended_image_info[:12]
+
+            # 重新組合完整數據（使用標準的 12 bytes ImageInfo）
+            complete_data = standard_image_info + decompressed_pixels
             return complete_data
         else:
             raise Exception(f"Unsupported data type: {data_type}")
@@ -1887,7 +2130,7 @@ sequenceDiagram
     G->>G: 接收並解析 update_preview
     G->>G: 根據 dataType 處理 rawdata
     alt dataType == "runlendata"
-        G->>G: 分離 ImageInfo (12 bytes)
+        G->>G: 分離 ImageInfo (16 bytes)
         G->>G: 解壓縮像素數據 (RLE)
         G->>G: 重組完整 EPD 數據
     else dataType == "rawdata"
@@ -1959,7 +2202,7 @@ sequenceDiagram
     G->>G: 驗證數據完整性 (可選)
     G->>G: 根據 dataType 處理重組數據
     alt dataType == "runlendata"
-        G->>G: 分離 ImageInfo (12 bytes)
+        G->>G: 分離 ImageInfo (16 bytes)
         G->>G: 解壓縮像素數據 (RLE)
         G->>G: 重組完整 EPD 數據
     else dataType == "rawdata"
@@ -2462,7 +2705,7 @@ class HealthMonitor:
 
 ---
 
-**最後更新**: 2025年7月
+**最後更新**: 2024年10月
 **版本**: 2.5.0 - 錯誤處理增強版
 **主要更新**:
 - **📊 函數呼叫時序圖**: 新增圖片傳輸和韌體傳輸的詳細時序圖
