@@ -100,12 +100,12 @@
 | **6.9 Modify & brush the binding relationship of tags, data & templates (brush)** | 修改並刷新標籤、數據與模板的綁定關係（刷屏） | ⭐⭐ | **換檔操作**：直接修改裝置綁定關係並更新畫面。 |
 | **6.10 Import system data** | 導入系統數據至門店 | ⭐ | **資料遷移**：系統初始化時的舊資料導入。 |
 | **6.11 Add remarks** | 新增裝置備註 | ⭐⭐ | **維修備註**：標記標籤狀態。 |
-| **6.12 Query bound data** | 查詢已綁定數據 | ⭐⭐⭐ | **現場查價**：掃描標籤 MAC，確認目前系統認定它顯示什麼商品。 |
+| **6.12 Query bound data according to label Mac** | 查詢已綁定數據 | ⭐⭐⭐ | **現場查價**：掃描標籤 MAC，確認目前系統認定它顯示什麼商品。 |
 | **6.13 Query device info** | 查詢裝置詳細資訊 | ⭐⭐⭐ | **故障排除**：查詢特定標籤的詳細硬體資訊、韌體版本。 |
 | **6.14 Query device (Admin)**| 根據 MAC 查詢(管理員) | ⭐⭐ | **管理員查詢**：僅限 Admin 權限的詳細裝置查詢。 |
-| **6.15 Query unbound/bound**| 查詢未綁定/綁定列表 | ⭐⭐⭐ | **尋找閒置標籤**：列出店內所有未綁定的標籤 MAC，供新商品使用。 |
-| **6.16 Query tags by AP** | 查詢網關下屬標籤 | ⭐⭐ | **訊號優化**：分析哪些標籤連線到哪台網關，優化網關擺放位置。 |
-| **6.17 Export binding list** | 匯出綁定列表 | ⭐⭐ | **報表匯出**：匯出目前的亮燈與綁定清單供離線分析。 |
+| **6.15 Query the MAC list of unbound devices in the store or the binding relationship of bound devices**| 查詢門市內未綁定設備的 MAC 列表或已綁定設備的關係 | ⭐⭐⭐ | **尋找閒置標籤**：列出店內所有未綁定的標籤 MAC，供新商品使用。 |
+| **6.16 Query the label devices that communicate with gateway** | 查詢與網關通訊的標籤設備 | ⭐⭐ | **訊號優化**：分析哪些標籤連線到哪台網關，優化網關擺放位置。 |
+| **6.17 Export the binding list of the warning light and the label** | 匯出警示燈與標籤的綁定列表 | ⭐⭐ | **報表匯出**：匯出目前的亮燈與綁定清單供離線分析。 |
 | **6.18 Bind devices with template (multi-data)** | 綁定模板(多商品) | ⭐⭐⭐ | **多頁顯示**：綁定時指定特殊模板（如：顯示多個商品或庫存資訊）。 |
 
 ---
